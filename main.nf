@@ -26,11 +26,10 @@ def helpMessage() {
                                     Available: conda, docker, singularity, awsbatch, test and more.
 
     Options:
-      --genome                      Name of iGenomes reference
       --singleEnd                   Specifies that the input is single end reads
 
     References                      If not specified in the configuration file or you wish to overwrite any of the references.
-      --fasta                       Path to Fasta reference
+      --host                        Path to host database
 
     Other options:
       --outdir                      The output directory where the results will be saved
@@ -56,9 +55,9 @@ if (params.help) {
  */
 
 // Check if genome exists in the config file
-if (params.genomes && params.genome && !params.genomes.containsKey(params.genome)) {
-    exit 1, "The provided genome '${params.genome}' is not available in the iGenomes file. Currently the available genomes are ${params.genomes.keySet().join(", ")}"
-}
+// if (params.genomes && params.genome && !params.genomes.containsKey(params.genome)) {
+//     exit 1, "The provided genome '${params.genome}' is not available in the iGenomes file. Currently the available genomes are ${params.genomes.keySet().join(", ")}"
+// }
 
 // TODO nf-core: Add any reference files that are needed
 // Configurable reference genomes
@@ -123,7 +122,6 @@ if (workflow.revision) summary['Pipeline Release'] = workflow.revision
 summary['Run Name']         = custom_runName ?: workflow.runName
 // TODO nf-core: Report custom parameters here
 summary['Reads']            = params.reads
-summary['Fasta Ref']        = params.fasta
 summary['Data Type']        = params.singleEnd ? 'Single-End' : 'Paired-End'
 summary['Max Resources']    = "$params.max_memory memory, $params.max_cpus cpus, $params.max_time time per job"
 if (workflow.containerEngine) summary['Container'] = "$workflow.containerEngine - $workflow.container"
@@ -171,39 +169,39 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
 /*
  * Parse software version numbers
  */
-process get_software_versions {
-    publishDir "${params.outdir}/pipeline_info", mode: 'copy',
-        saveAs: { filename ->
-            if (filename.indexOf(".csv") > 0) filename
-            else null
-        }
-
-    output:
-    file 'software_versions_mqc.yaml' into software_versions_yaml
-    file "software_versions.csv"
-
-    script:
-    // TODO nf-core: Get all tools to print their version number here
-    """
-    echo $workflow.manifest.version > v_pipeline.txt
-    echo $workflow.nextflow.version > v_nextflow.txt
-    fastqc --version > v_fastqc.txt
-    multiqc --version > v_multiqc.txt
-    scrape_software_versions.py &> software_versions_mqc.yaml
-    """
-}
+// process get_software_versions {
+//     publishDir "${params.outdir}/pipeline_info", mode: 'copy',
+//         saveAs: { filename ->
+//             if (filename.indexOf(".csv") > 0) filename
+//             else null
+//         }
+// 
+//     output:
+//     file 'software_versions_mqc.yaml' into software_versions_yaml
+//     file "software_versions.csv"
+// 
+//     script:
+//     // TODO nf-core: Get all tools to print their version number here
+//     """
+//     echo $workflow.manifest.version > v_pipeline.txt
+//     echo $workflow.nextflow.version > v_nextflow.txt
+//     fastqc --version > v_fastqc.txt
+//     multiqc --version > v_multiqc.txt
+//     scrape_software_versions.py &> software_versions_mqc.yaml
+//     """
+// }
 
 /*
  * STEP 1 - FastQC
  */
 process fastqc {
-    tag "$name"
+    tag "FASTQC-${id}"
     label 'process_medium'
     publishDir "${params.outdir}/fastqc", mode: 'copy',
         saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
 
     input:
-    set val(name), file(reads) from read_files_fastqc
+    set val(id), file(reads) from read_files_fastqc
 
     output:
     file "*_fastqc.{zip,html}" into fastqc_results
@@ -214,50 +212,379 @@ process fastqc {
     """
 }
 
+
+
+/*
+* Step 2. FASTP
+*/
+
+process fastp {
+    tag "fastp-${name}"
+	label 'process_low'
+    publishDir "${params.outdir}/Trimmed-Reads-FastP", mode: 'link'
+
+    input:
+    set val(id), file(reads) from read_files_trimming
+
+    output:
+    set val(id), file("*.qualtrim.fastq.gz") into trimmedFASTQC, trimmedAssemble, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan
+    file "*.html"
+    file "*.json"
+
+    script:
+    if (params.singleEnd) {
+        """
+        fastp -i ${reads[0]} \\
+            -o ${id}.R1.qualtrim.fastq.gz \\
+            --failed_out ${id}.R1.failed.fastq.gz \\
+            --thread ${task.cpus} \\
+            --html ${id}.fastp.html \\
+            --json ${id}.fastp.json \\
+            ${params.fastpOptions} > ${id}.trimmomatic.runlog 2>&1
+        """
+    } else {
+        """
+        fastp -i ${reads[0]} -I ${reads[1]} \\
+            -o ${id}.R1.qualtrim.fastq.gz \\
+            -O ${id}.R2.qualtrim.fastq.gz \\
+            --unpaired1 ${id}.R1.unpaired.fastq.gz \\
+            --unpaired2 ${id}.R2.unpaired.fastq.gz
+            --failed_out ${id}.failed.fastq.gz \\
+            --html ${id}.fastp.html \\
+            --json ${id}.fastp.json \\
+            --thread ${task.cpus} \\
+            ${params.fastpOptions} > ${id}.trimmomatic.runlog 2>&1
+        """
+    }
+}
+
+/*
+* Step 3. FASTQC on trimmed files
+*/
+
+process fastqc_post {
+    tag "FASTQC-post-${name}"
+    label 'process_medium'
+    publishDir "${params.outdir}/fastqc", mode: 'copy',
+        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
+
+    input:
+    set val(name), file(reads) from trimmedFASTQC
+
+    output:
+    file "*_fastqc.{zip,html}" into fastqc_post_results
+
+    script:
+    """
+    fastqc --quiet --threads $task.cpus $reads
+    """
+}
+
+/*
+ * Step 4: Remove host DNA
+ */
+
+// TODO: add support support
+// if (false)  {
+//     process kneaddata {
+//         publishDir "${params.outdir}/Host-Filtered", mode: "link"
+// 
+//         input:
+//         set pair_id, file(read1), file(read2) from trimmedToFilter
+//         // set pair_id, file(mreads) from trimmedToFilter
+// 
+//         output:
+//         set pair_id, file("${pair_id}/*paired_1.fastq.gz"), file("${pair_id}/*paired_2.fastq.gz") into filterToMerge
+//         file("${pair_id}/*unmatched_{1,2}.fastq.gz")
+//         file("${pair_id}/*contam_{1,2}.fastq.gz")
+//         file("${pair_id}/*kneaddata.log")
+// 
+//         """
+//         kneaddata --input ${read1} --input ${read2} \
+//             --reference-db ${params.host} \
+//             --output ${pair_id} \
+//             --bypass-trim \
+//             --threads ${task.cpus}
+// 
+//         pigz -p ${task.cpus} ${pair_id}/*.fastq
+//         """
+//     }
+// } else {
+// 
+//     // TODO: skip this step and set channel appropriately 
+// }
+
+/*
+ * Step 4: VSEARCH FASTQ Merging
+ */
+
+// TODO: add support
+// if (false)  {
+//     process vsearchMergePairs {
+//         executor 'slurm'
+//         cpus 12
+//         queue 'normal'
+//         memory '12 GB'
+//         module vsearchMod,pigzMod
+//         publishDir "${params.outdir}/MergePairs", mode: "link"
+// 
+//         input:
+//         set pair_id, file(read1), file(read2) from filterToMerge
+// 
+//         output:
+//         set pair_id, file("*.merged.fastq.gz") into mergedReads,mergedToCombine
+//         file("*.unmerged.R1.fastq.gz") into unmergedR1
+//         file("*.unmerged.R2.fastq.gz") into unmergedR2
+//         file("*.merged.log")
+//         file("*.summary.log")
+// 
+//         """
+//         vsearch --fastq_mergepairs \
+//             ${read1} \
+//             --reverse ${read2} \
+//             --threads ${task.cpus} \
+//             --fastqout ${pair_id}.merged.fastq \
+//             --fastqout_notmerged_fwd ${pair_id}.unmerged.R1.fastq \
+//             --fastqout_notmerged_rev ${pair_id}.unmerged.R2.fastq \
+//             --eetabbedout ${pair_id}.merged.log > ${pair_id}.summary.log 2>&1
+// 
+//         pigz -p ${task.cpus} *.fastq
+//         """
+//     }
+//     /*
+//     * Step 5. FASTQC on merged files
+//     */
+// 
+//     process runFASTQCMerged {
+//         executor 'slurm'
+//         cpus 4
+//         queue 'lowmem'
+//         memory '24 GB'
+//         module fastqcMod
+//         publishDir "${params.outdir}/FASTQC-Merged", mode: 'link'
+// 
+//         input:
+//         set pair_id, file(mergedReads) from mergedReads
+// 
+//         output:
+//         file "*fastqc.{html,zip}"
+// 
+//         """
+//         fastqc -t ${task.cpus} --noextract ${mergedReads}
+//         """
+//     }
+//     
+//     process combineReads {
+//         executor 'slurm'
+//         cpus 1
+//         queue 'normal'
+//         memory '4 GB'
+//         module multiQCMod
+//         publishDir "${params.outdir}/Combined-Reads", mode: "link"
+// 
+//         input:
+//         set pair_id, file(reads) from mergedToCombine
+//         file(unmerged) from unmergedR1
+// 
+//         output:
+//         set pair_id, file("*.combined.fastq.gz") into filteredReadsToHUMANn2,filteredReadsToMetaPhlan2,filteredReadsToCentrifuge
+// 
+//         """
+//         cat ${reads} ${unmerged} > ${pair_id}.combined.fastq.gz
+//         """
+//     }
+// 
+// } else {
+//     // TODO: make empty channels
+// }
+
+
+/*
+ * Step 6: MultiQC
+ */
+
 /*
  * STEP 2 - MultiQC
  */
-process multiqc {
-    publishDir "${params.outdir}/MultiQC", mode: 'copy'
+// process multiqc {
+//     publishDir "${params.outdir}/MultiQC", mode: 'copy'
+// 
+//     input:
+//     file multiqc_config from ch_multiqc_config
+//     // TODO nf-core: Add in log files from your new processes for MultiQC to find!
+//     
+//     file ("fastqc/*") from fastqc_results.collect().ifEmpty([])
+//     file ("software_versions/*") from software_versions_yaml.collect()
+//     file workflow_summary from create_workflow_summary(summary)
+// 
+//     output:
+//     file "*multiqc_report.html" into multiqc_report
+//     file "*_data"
+//     file "multiqc_plots"
+// 
+//     script:
+//     rtitle = custom_runName ? "--title \"$custom_runName\"" : ''
+//     rfilename = custom_runName ? "--filename " + custom_runName.replaceAll('\\W','_').replaceAll('_+','_') + "_multiqc_report" : ''
+//     // TODO nf-core: Specify which MultiQC modules to use with -m for a faster run time
+//     """
+//     multiqc -f $rtitle $rfilename --config $multiqc_config .
+//     """
+// }
 
-    input:
-    file multiqc_config from ch_multiqc_config
-    // TODO nf-core: Add in log files from your new processes for MultiQC to find!
-    file ('fastqc/*') from fastqc_results.collect().ifEmpty([])
-    file ('software_versions/*') from software_versions_yaml.collect()
-    file workflow_summary from create_workflow_summary(summary)
+// process runMultiQC {
+//    executor 'slurm'
+//    cpus 1
+//    queue 'normal'
+//    memory '4 GB'
+//    module multiQCMod
+//    publishDir "${params.outdir}/MultiQC", mode: "link"
+// 
+//    input:
+//    file ('RawFASTQC/*') from rawFastqcResults.collect()
+//    file ('Trimmomatic/*') from trimmedFastqLogs.collect()
+//    file ('TrimmedFASTQC/*') from trimmedFastqcResults.collect()
+// 
+//    output:
+//    file '*multiqc_report.html' into multiqc_report
+//    file '*_data' into multiqc_data
+//    file '.command.err' into multiqc_stderr
+// 
+//    """
+//    multiqc . -f -d -m fastqc -m trimmomatic
+//    """
+// }
 
-    output:
-    file "*multiqc_report.html" into multiqc_report
-    file "*_data"
-    file "multiqc_plots"
+/*
+ * Step 6: Combine Reads - we keep merged reads and unmerged R1
+ */
 
-    script:
-    rtitle = custom_runName ? "--title \"$custom_runName\"" : ''
-    rfilename = custom_runName ? "--filename " + custom_runName.replaceAll('\\W','_').replaceAll('_+','_') + "_multiqc_report" : ''
-    // TODO nf-core: Specify which MultiQC modules to use with -m for a faster run time
-    """
-    multiqc -f $rtitle $rfilename --config $multiqc_config .
-    """
+
+// TODO: add PE read support
+if (params.runMetaPhlan2) {
+
+    process metaphlan2 {
+        tag "Metaphlan2-${pair_id}"
+        label 'process_high'
+        publishDir "${params.outdir}/MetaPhlan2", mode: "link"
+
+        input:
+        set val(pair_id), file(freads) from trimmedMetaphlan2
+
+        output:
+        file("${pair_id}/*")
+
+        """
+        metaphlan2.py ${freads} \
+            --bowtie2out ${pair_id}.bowtie2.bz2 \
+            --nproc ${task.cpus} \
+            --input_type fastq \
+            --biom {pair_id}.biom \
+            --tmp_dir /scratch \
+            -o ${pair_id}.profile.txt
+        """
+    }
+
 }
+
+// if (params.runHUMANN2) {
+// 
+//     process metaphlan2 {
+//         executor 'slurm'
+//         cpus 24
+//         queue 'normal'
+//         memory '72 GB'
+//         module humann2Mod
+//         publishDir "${params.outdir}/HUMANn2", mode: "link"
+// 
+//         input:
+//         set pair_id, file(freads) from filteredReadsToMetaPhlan2
+// 
+//         output:
+//         file("${pair_id}/*")
+// 
+//         """
+//         metaphlan2.py ${freads} \
+//             --bowtie2out ${pair_id}.bowtie2.bz2 \
+//             --nproc ${task.cpus} \
+//             --input_type fastq \
+//             --biom {pair_id}.biom \
+//             --tmp_dir /scratch \
+//             -o ${pair_id}.profile.txt
+//         """
+//     }
+// 
+// }
+
+// if (params.runKraken2) {
+// 
+//     process kraken2 {
+//         executor 'slurm'
+//         cpus 24
+//         queue 'normal'
+//         memory '72 GB'
+//         module krakenMod
+//         publishDir "${params.outdir}/Kraken2", mode: "link"
+// 
+//         input:
+//         set pair_id, file(freads) from filteredReadsToMetaPhlan2
+// 
+//         output:
+//         file("${pair_id}.profile.txt")
+//         file("${pair_id}.bowtie2.bz2")
+//         file("${pair_id}.biom")
+// 
+//         """
+// 
+//         """
+//     }
+// 
+// }
+
+if (params.runAssembly) {
+    // TODO: add SE read support
+    process megahit {
+        tag "MEGAHIT-{$id}"
+        label 'process_high'
+        publishDir "${params.outdir}/HUMANn2", mode: "link"
+
+        input:
+        set val(id), file(freads) from trimmedAssembly
+
+        output:
+        file("${id}/*")
+    
+        script:
+        megahitparams = params.megahit_args ? params.megahit_args : ''
+        """
+        megahit \\
+            -1 ${freads[0]} -2 ${freads[1]} \\
+            -t ${task.cpus} \\
+            -o ${id} ${megahitparams}
+        """
+    }
+
+}
+
+
 
 /*
  * STEP 3 - Output Description HTML
  */
-process output_documentation {
-    publishDir "${params.outdir}/pipeline_info", mode: 'copy'
-
-    input:
-    file output_docs from ch_output_docs
-
-    output:
-    file "results_description.html"
-
-    script:
-    """
-    markdown_to_html.r $output_docs results_description.html
-    """
-}
+ 
+// process output_documentation {
+//     publishDir "${params.outdir}/pipeline_info", mode: 'copy'
+// 
+//     input:
+//     file output_docs from ch_output_docs
+// 
+//     output:
+//     file "results_description.html"
+// 
+//     script:
+//     """
+//     markdown_to_html.r $output_docs results_description.html
+//     """
+// }
 
 /*
  * Completion e-mail notification
