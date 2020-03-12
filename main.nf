@@ -196,7 +196,7 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
  */
 process fastqc {
     tag "FASTQC-${id}"
-    label 'process_medium'
+    label 'process_low'
     publishDir "${params.outdir}/fastqc", mode: 'copy',
         saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
 
@@ -219,7 +219,7 @@ process fastqc {
 */
 
 process fastp {
-    tag "fastp-${name}"
+    tag "fastp-${id}"
 	label 'process_low'
     publishDir "${params.outdir}/Trimmed-Reads-FastP", mode: 'link'
 
@@ -227,7 +227,7 @@ process fastp {
     set val(id), file(reads) from read_files_trimming
 
     output:
-    set val(id), file("*.qualtrim.fastq.gz") into trimmedFASTQC, trimmedAssemble, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan
+    set val(id), file("*.qualtrim.fastq.gz") into trimmedFASTQC, trimmedAssembly, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan, trimmedbwaAln
     file "*.html"
     file "*.json"
 
@@ -248,7 +248,7 @@ process fastp {
             -o ${id}.R1.qualtrim.fastq.gz \\
             -O ${id}.R2.qualtrim.fastq.gz \\
             --unpaired1 ${id}.R1.unpaired.fastq.gz \\
-            --unpaired2 ${id}.R2.unpaired.fastq.gz
+            --unpaired2 ${id}.R2.unpaired.fastq.gz \\
             --failed_out ${id}.failed.fastq.gz \\
             --html ${id}.fastp.html \\
             --json ${id}.fastp.json \\
@@ -264,8 +264,8 @@ process fastp {
 
 process fastqc_post {
     tag "FASTQC-post-${name}"
-    label 'process_medium'
-    publishDir "${params.outdir}/fastqc", mode: 'copy',
+    label 'process_low'
+    publishDir "${params.outdir}/fastqc-post", mode: 'copy',
         saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
 
     input:
@@ -483,7 +483,6 @@ if (params.runMetaPhlan2) {
             -o ${pair_id}.profile.txt
         """
     }
-
 }
 
 // if (params.runHUMANN2) {
@@ -541,17 +540,18 @@ if (params.runMetaPhlan2) {
 // }
 
 if (params.runAssembly) {
-    // TODO: add SE read support
+    // TODO: add SE read support, adjust memory in process
     process megahit {
-        tag "MEGAHIT-{$id}"
+        tag "MEGAHIT-${id}"
         label 'process_high'
-        publishDir "${params.outdir}/HUMANn2", mode: "link"
+        publishDir "${params.outdir}/MEGAHIT", mode: "link"
 
         input:
         set val(id), file(freads) from trimmedAssembly
 
         output:
         file("${id}/*")
+        set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
     
         script:
         megahitparams = params.megahit_args ? params.megahit_args : ''
@@ -562,10 +562,132 @@ if (params.runAssembly) {
             -o ${id} ${megahitparams}
         """
     }
+    
+    if (params.diamondDB) {
+    
+        diamondDB = file(params.diamondDB)
+        // note memory usage; DIAMOND typically requires considerable memory esp. 
+        // for larger assemblies and databases (like nr)
+        process diamond {
+            tag "DIAMOND-${id}"
+            publishDir "${params.outdir}/DIAMOND", mode: "link"
+        
+            input:
+            set val(id), file(contigs) from assembly2diamond
 
+            output:
+            file("*.daa")
+            file("*.log")
+    
+            script:
+            """
+            diamond blastx -p ${task.cpus} \\
+                 -d ${diamondDB} \\
+                 -q $contigs \\
+                 -o ${id}.daa \\
+                 --outfmt 100 \\
+                 --tmpdir /dev/shm \\
+                 --range-culling -F 25 \\
+                 --top 5 \\
+                 --evalue 1e-5 \\
+                 --sensitive \\
+                 -v 2> "${id}.log"
+            """
+        }
+    }
+    
+    if (params.runMetaBAT) {
+    
+        process bwa_index {
+            tag "bwa-index-${id}"
+            publishDir "${params.outdir}/bwa-index", mode: "link"
+        
+            input:
+            set val(id), file(contigs) from assembly2bwaidx
+
+            output:
+            file("${id}.*") into bwaindex
+    
+            script:
+            """
+            bwa index -p $id $contigs
+            """
+        }
+        
+        process bwa_aln {
+            tag "bwa-aln-${id}"
+            
+            scratch "/scratch"
+            
+            input:
+            set val(id), file(reads) from trimmedbwaAln
+            file(idx) from bwaindex
+            
+            output:
+            set val(id), file("${id}.sam") into bwa2samtools
+    
+            script:
+            """
+            bwa mem -t ${task.cpus} $id $reads > ${id}.sam 
+            """
+        }
+
+        process samtools_sort {
+            tag "samtools-${id}"
+            publishDir "${params.outdir}/bwa-aln", mode: "link"
+        
+            input:
+            set val(id), file(aln) from bwa2samtools
+
+            output:
+            set val(id), file("${id}.sorted.bam*") into bwa2MetaBAT2
+            file("${id}.stats.txt")
+    
+            script:
+            """
+            samtools sort -o ${id}.sorted.bam -@ ${task.cpus} $aln
+            samtools index ${id}.sorted.bam
+            samtools stats ${id}.sorted.bam > ${id}.stats.txt
+            """
+        }
+
+        process metabat2 {
+            tag "metabat2-${id}"
+            publishDir "${params.outdir}/metabat2", mode: "link"
+        
+            input:
+            set val(id), file(aln) from bwa2MetaBAT2
+            set val(id2), file(contigs) from assembly2MetaBAT
+
+            output:
+            set val(id), file("${id}/*") into bins2checkM
+            file("${id}.depth.txt")
+                
+            script:
+            metabat_params = ${params.metabatOpts} ? ${params.metabatOpts} : ""
+            """
+            jgi_summarize_bam_contig_depths \\
+                --outputDepth ${id}.depth.txt $aln
+             
+            metabat2 -i $contigs \\
+                -t ${task.cpus} \\
+                --unbinned \\
+                -a ${id}.depth.txt ${metabat_params} \\
+                -o ${id}/bin
+            """
+        }
+        
+//         process checkm {
+//         
+//         script:
+//         """
+//         checkm taxonomy_wf class Gammaproteobacteria ../checkm_tests/ ./checkm_Gammaproteobacteria -t 16 -x fa > checkm_all_Gammaproteobacteria_v1.txt
+//         """
+//         }
+                
+    }
+    // next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
 }
-
-
 
 /*
  * STEP 3 - Output Description HTML
