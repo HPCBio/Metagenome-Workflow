@@ -660,7 +660,7 @@ if (params.runAssembly) {
             set val(id2), file(contigs) from assembly2MetaBAT
 
             output:
-            set val(id), file("${id}/*") into bins2checkM
+            set val(id), file("${id}/bin") into bins2checkM
             file("${id}.depth.txt")
                 
             script:
@@ -672,18 +672,29 @@ if (params.runAssembly) {
             metabat2 -i $contigs \\
                 -t ${task.cpus} \\
                 --unbinned \\
+                -m 1500 \\
                 -a ${id}.depth.txt ${metabat_params} \\
                 -o ${id}/bin
             """
         }
         
-//         process checkm {
-//         
-//         script:
-//         """
-//         checkm taxonomy_wf class Gammaproteobacteria ../checkm_tests/ ./checkm_Gammaproteobacteria -t 16 -x fa > checkm_all_Gammaproteobacteria_v1.txt
-//         """
-//         }
+        process checkm {
+            tag "checkm-${id}"
+            publishDir "${params.outdir}/checkm", mode: "link"
+        
+            input:
+            set val(id), file(bins) from bins2checkM
+
+            output:
+            set val(id), file("${id}/CheckM") into checkMResults
+                
+            script:
+            """
+            checkm lineage_wf \\
+                -t ${task.cpus} -x fa \\
+                ${bins} ${id}/CheckM
+            """        
+        }
                 
     }
     // next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
