@@ -541,27 +541,59 @@ if (params.runMetaPhlan2) {
 
 if (params.runAssembly) {
     // TODO: add SE read support, adjust memory in process
-    process megahit {
-        tag "MEGAHIT-${id}"
-        label 'process_high'
-        publishDir "${params.outdir}/MEGAHIT", mode: "link"
-
-        input:
-        set val(id), file(freads) from trimmedAssembly
-
-        output:
-        file("${id}/*")
-        set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
+    if (params.assembler == 'megahit') {
     
-        script:
-        megahitparams = params.megahit_args ? params.megahit_args : ''
-        """
-        megahit \\
-            -1 ${freads[0]} -2 ${freads[1]} \\
-            -t ${task.cpus} \\
-            -o ${id} ${megahitparams}
-        """
+        process megahit {
+            tag "MEGAHIT-${id}"
+            label 'process_high'
+            publishDir "${params.outdir}/MEGAHIT", mode: "link"
+
+            input:
+            set val(id), file(freads) from trimmedAssembly
+
+            output:
+            file("${id}/*")
+            set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
+    
+            script:
+            megahitparams = params.megahit_opts ? params.megahit_opts : ''
+            """
+            megahit \\
+                -1 ${freads[0]} -2 ${freads[1]} \\
+                -t ${task.cpus} \\
+                -o ${id} ${megahitparams}
+            """
+        }
+    } else if (params.assembler == 'metaspades')
+
+        process metaspades {
+            tag "metaSPAdes-${id}"
+            label 'process_high'
+            publishDir "${params.outdir}/metaSPADES", mode: "link"
+
+            input:
+            set val(id), file(freads) from trimmedAssembly
+
+            output:
+            file("${id}/*")
+            set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
+    
+            script:
+            metaspadesparams = params.metaspades_opts ? params.metaspades_opts : ''
+            """
+            metaspades.py -t ${task.cpus} \\
+                -1 ${freads[0]} -2 ${freads[1]} \\
+                -o ${id} ${metaspadesparams}
+            """
+        }
+    } else {
+        // We need to shut this down!
+        // TODO: die with a message, silent stop is horrid!
+        assembly2diamond = Channel.empty()
+        assembly2bwaidx = Channel.empty()
+        assembly2MetaBAT = Channel.empty()    
     }
+
     
     if (params.diamondDB) {
     
@@ -664,7 +696,7 @@ if (params.runAssembly) {
             file("${id}.depth.txt")
                 
             script:
-            metabat_params = ${params.metabatOpts} ? ${params.metabatOpts} : ""
+            metabatparams = ${params.metabat_opts} ? ${params.metabat_opts} : ""
             """
             jgi_summarize_bam_contig_depths \\
                 --outputDepth ${id}.depth.txt $aln
@@ -673,7 +705,7 @@ if (params.runAssembly) {
                 -t ${task.cpus} \\
                 --unbinned \\
                 -m 1500 \\
-                -a ${id}.depth.txt ${metabat_params} \\
+                -a ${id}.depth.txt ${metabatparams} \\
                 -o ${id}/bin
             """
         }
