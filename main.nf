@@ -212,8 +212,6 @@ process fastqc {
     """
 }
 
-
-
 /*
 * Step 2. FASTP
 */
@@ -284,7 +282,7 @@ process fastqc_post {
  * Step 4: Remove host DNA
  */
 
-// TODO: add support support
+// TODO: add support
 // if (false)  {
 //     process kneaddata {
 //         publishDir "${params.outdir}/Host-Filtered", mode: "link"
@@ -564,7 +562,8 @@ if (params.runAssembly) {
                 -o ${id} ${megahitparams}
             """
         }
-    } else if (params.assembler == 'metaspades')
+        
+    } else if (params.assembler == 'metaspades') {
 
         process metaspades {
             tag "metaSPAdes-${id}"
@@ -586,6 +585,7 @@ if (params.runAssembly) {
                 -o ${id} ${metaspadesparams}
             """
         }
+        
     } else {
         // We need to shut this down!
         // TODO: die with a message, silent stop is horrid!
@@ -593,7 +593,6 @@ if (params.runAssembly) {
         assembly2bwaidx = Channel.empty()
         assembly2MetaBAT = Channel.empty()    
     }
-
     
     if (params.diamondDB) {
     
@@ -653,7 +652,7 @@ if (params.runAssembly) {
             
             input:
             set val(id), file(reads) from trimmedbwaAln
-            file(idx) from bwaindex
+            file(idx) from bwaindex.collect()
             
             output:
             set val(id), file("${id}.sam") into bwa2samtools
@@ -704,7 +703,6 @@ if (params.runAssembly) {
             metabat2 -i $contigs \\
                 -t ${task.cpus} \\
                 --unbinned \\
-                -m 1500 \\
                 -a ${id}.depth.txt ${metabatparams} \\
                 -o ${id}/bin
             """
@@ -725,7 +723,7 @@ if (params.runAssembly) {
             checkm lineage_wf \\
                 -t ${task.cpus} -x fa \\
                 ${bins} ${id}/CheckM
-            """        
+            """
         }
                 
     }
