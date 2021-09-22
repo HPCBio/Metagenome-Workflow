@@ -559,7 +559,7 @@ process humannBootstrap {
     
     humann --input bootstrap.reads.fastq.gz \
         --output bootstrap \
-        --search-mode uniref50 \
+        --search-mode uniref90 \
         --threads ${task.cpus} \
         --taxonomic-profile max_profiled_metagenome.tsv
 
@@ -584,7 +584,7 @@ process humann {
     
     humann --input all.reads.fastq.gz \
         --output ${id} \
-        --search-mode uniref50 \
+        --search-mode uniref90 \
         --threads ${task.cpus} \
         --nucleotide-database ${db} \
         --bypass-nucleotide-index    
