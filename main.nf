@@ -191,6 +191,27 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
 //     """
 // }
 
+if (params.hostfasta) {
+    
+    genomeFile = file(params.hostfasta)
+    
+    process bowtie2Index {
+        storeDir "${params.outdir}/bowtie2-host"
+
+        input:
+        file gf from genomeFile
+
+        output:
+        file "*.bt2" into bowtie2Index
+
+        script:
+        """
+        bowtie2-build --threads ${task.cpus} ${gf} ${gf.getSimpleName()}
+        """
+    }
+}
+
+
 /*
  * STEP 1 - FastQC
  */
@@ -225,7 +246,7 @@ process fastp {
     set val(id), file(reads) from read_files_trimming
 
     output:
-    set val(id), file("*.qualtrim.fastq.gz") into trimmedFASTQC, trimmedAssembly, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan, trimmedbwaAln
+    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFASTQC, trimmedToKneaddata
     file "*.html"
     file "*.json"
 
@@ -283,34 +304,36 @@ process fastqc_post {
  */
 
 // TODO: add support
-// if (false)  {
-//     process kneaddata {
-//         publishDir "${params.outdir}/Host-Filtered", mode: "link"
-// 
-//         input:
-//         set pair_id, file(read1), file(read2) from trimmedToFilter
-//         // set pair_id, file(mreads) from trimmedToFilter
-// 
-//         output:
-//         set pair_id, file("${pair_id}/*paired_1.fastq.gz"), file("${pair_id}/*paired_2.fastq.gz") into filterToMerge
-//         file("${pair_id}/*unmatched_{1,2}.fastq.gz")
-//         file("${pair_id}/*contam_{1,2}.fastq.gz")
-//         file("${pair_id}/*kneaddata.log")
-// 
-//         """
-//         kneaddata --input ${read1} --input ${read2} \
-//             --reference-db ${params.host} \
-//             --output ${pair_id} \
-//             --bypass-trim \
-//             --threads ${task.cpus}
-// 
-//         pigz -p ${task.cpus} ${pair_id}/*.fastq
-//         """
-//     }
-// } else {
-// 
-//     // TODO: skip this step and set channel appropriately 
-// }
+if (params.hostfasta)  {
+    
+    process kneaddata {
+        publishDir "${params.outdir}/Host-Filtered", mode: "link"
+
+        input:
+        set pair_id, file(read1), file(read2) from trimmedToKneaddata
+        // set pair_id, file(mreads) from trimmedToFilter
+
+        output:
+        set pair_id, file("${pair_id}/*paired_1.fastq.gz"), file("${pair_id}/*paired_2.fastq.gz") into trimmedToAssembly, trimmedToHUMANN, trimmedToKraken, trimmedToMetaphlan, trimmedTobwaAln
+        file("${pair_id}/*unmatched_{1,2}.fastq.gz")
+        file("${pair_id}/*contam_{1,2}.fastq.gz")
+        file("${pair_id}/*kneaddata.log")
+
+        """
+        kneaddata --input ${read1} --input ${read2} \
+            --reference-db ${genomeFile.getParent()}/${genomeFile.getBaseName()} \
+            --output ${pair_id} \
+            --bypass-trim \
+            --threads ${task.cpus}
+
+        pigz -p ${task.cpus} ${pair_id}\*.fastq
+        """
+        
+    }
+} else {
+    exit 1, "Must set host genome for filtering using hostdb"
+    // TODO: skip this step and set channel appropriately 
+}
 
 /*
  * Step 4: VSEARCH FASTQ Merging
@@ -458,43 +481,15 @@ process fastqc_post {
 
 
 // TODO: add PE read support
-if (params.runMetaPhlan2) {
-
-    process metaphlan2 {
-        tag "Metaphlan2-${pair_id}"
-        label 'process_high'
-        publishDir "${params.outdir}/MetaPhlan2", mode: "link"
-
-        input:
-        set val(pair_id), file(freads) from trimmedMetaphlan2
-
-        output:
-        file("${pair_id}/*")
-
-        """
-        metaphlan2.py ${freads} \
-            --bowtie2out ${pair_id}.bowtie2.bz2 \
-            --nproc ${task.cpus} \
-            --input_type fastq \
-            --biom {pair_id}.biom \
-            --tmp_dir /scratch \
-            -o ${pair_id}.profile.txt
-        """
-    }
-}
-
-// if (params.runHUMANN2) {
+// if (params.runMetaPhlan) {
 // 
-//     process metaphlan2 {
-//         executor 'slurm'
-//         cpus 24
-//         queue 'normal'
-//         memory '72 GB'
-//         module humann2Mod
-//         publishDir "${params.outdir}/HUMANn2", mode: "link"
+//     process metaphlan {
+//         tag "Metaphlan-${pair_id}"
+//         label 'process_high'
+//         publishDir "${params.outdir}/MetaPhlan", mode: "link"
 // 
 //         input:
-//         set pair_id, file(freads) from filteredReadsToMetaPhlan2
+//         set val(pair_id), file(freads) from filteredReadsToMetaphlan
 // 
 //         output:
 //         file("${pair_id}/*")
@@ -507,6 +502,27 @@ if (params.runMetaPhlan2) {
 //             --biom {pair_id}.biom \
 //             --tmp_dir /scratch \
 //             -o ${pair_id}.profile.txt
+//         """
+//     }
+// }
+
+// if (params.runHUMANN) {
+// 
+//     process humann {
+//         cpus 24
+//         memory '72 GB'
+//         module humannMod
+//         publishDir "${params.outdir}/HUMANn"
+// 
+//         input:
+//         set pair_id, file(freads) from filteredReadsToHumann
+// 
+//         output:
+//         file("${pair_id}/*")
+// 
+//         """
+//         ## // PE: need to concatenate into one temp file
+//         ## // humann --input $SAMPLE.fastq --output $OUTPUT_DIR
 //         """
 //     }
 // 
@@ -537,198 +553,198 @@ if (params.runMetaPhlan2) {
 // 
 // }
 
-if (params.runAssembly) {
-    // TODO: add SE read support, adjust memory in process
-    if (params.assembler == 'megahit') {
-    
-        process megahit {
-            tag "MEGAHIT-${id}"
-            label 'process_high'
-            publishDir "${params.outdir}/MEGAHIT", mode: "link"
-
-            input:
-            set val(id), file(freads) from trimmedAssembly
-
-            output:
-            file("${id}/*")
-            set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
-    
-            script:
-            megahitparams = params.megahit_opts ? params.megahit_opts : ''
-            """
-            megahit \\
-                -1 ${freads[0]} -2 ${freads[1]} \\
-                -t ${task.cpus} \\
-                -o ${id} ${megahitparams}
-            """
-        }
-        
-    } else if (params.assembler == 'metaspades') {
-
-        process metaspades {
-            tag "metaSPAdes-${id}"
-            label 'process_high'
-            publishDir "${params.outdir}/metaSPADES", mode: "link"
-
-            input:
-            set val(id), file(freads) from trimmedAssembly
-
-            output:
-            file("${id}/*")
-            set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
-    
-            script:
-            metaspadesparams = params.metaspades_opts ? params.metaspades_opts : ''
-            """
-            metaspades.py -t ${task.cpus} \\
-                -1 ${freads[0]} -2 ${freads[1]} \\
-                -o ${id} ${metaspadesparams}
-            """
-        }
-        
-    } else {
-        // We need to shut this down!
-        // TODO: die with a message, silent stop is horrid!
-        assembly2diamond = Channel.empty()
-        assembly2bwaidx = Channel.empty()
-        assembly2MetaBAT = Channel.empty()    
-    }
-    
-    if (params.diamondDB) {
-    
-        diamondDB = file(params.diamondDB)
-        // note memory usage; DIAMOND typically requires considerable memory esp. 
-        // for larger assemblies and databases (like nr)
-        process diamond {
-            tag "DIAMOND-${id}"
-            publishDir "${params.outdir}/DIAMOND", mode: "link"
-        
-            input:
-            set val(id), file(contigs) from assembly2diamond
-
-            output:
-            file("*.daa")
-            file("*.log")
-    
-            script:
-            """
-            diamond blastx -p ${task.cpus} \\
-                 -d ${diamondDB} \\
-                 -q $contigs \\
-                 -o ${id}.daa \\
-                 --outfmt 100 \\
-                 --tmpdir /dev/shm \\
-                 --range-culling -F 25 \\
-                 --top 5 \\
-                 --evalue 1e-5 \\
-                 --sensitive \\
-                 -v 2> "${id}.log"
-            """
-        }
-    }
-    
-    if (params.runMetaBAT) {
-    
-        process bwa_index {
-            tag "bwa-index-${id}"
-            publishDir "${params.outdir}/bwa-index", mode: "link"
-        
-            input:
-            set val(id), file(contigs) from assembly2bwaidx
-
-            output:
-            file("${id}.*") into bwaindex
-    
-            script:
-            """
-            bwa index -p $id $contigs
-            """
-        }
-        
-        process bwa_aln {
-            tag "bwa-aln-${id}"
-            
-            scratch "/scratch"
-            
-            input:
-            set val(id), file(reads) from trimmedbwaAln
-            file(idx) from bwaindex.collect()
-            
-            output:
-            set val(id), file("${id}.sam") into bwa2samtools
-    
-            script:
-            """
-            bwa mem -t ${task.cpus} $id $reads > ${id}.sam 
-            """
-        }
-
-        process samtools_sort {
-            tag "samtools-${id}"
-            publishDir "${params.outdir}/bwa-aln", mode: "link"
-        
-            input:
-            set val(id), file(aln) from bwa2samtools
-
-            output:
-            set val(id), file("${id}.sorted.bam*") into bwa2MetaBAT2
-            file("${id}.stats.txt")
-    
-            script:
-            """
-            samtools sort -o ${id}.sorted.bam -@ ${task.cpus} $aln
-            samtools index ${id}.sorted.bam
-            samtools stats ${id}.sorted.bam > ${id}.stats.txt
-            """
-        }
-
-        process metabat2 {
-            tag "metabat2-${id}"
-            publishDir "${params.outdir}/metabat2", mode: "link"
-        
-            input:
-            set val(id), file(aln) from bwa2MetaBAT2
-            set val(id2), file(contigs) from assembly2MetaBAT
-
-            output:
-            set val(id), file("${id}/bin") into bins2checkM
-            file("${id}.depth.txt")
-                
-            script:
-            metabatparams = ${params.metabat_opts} ? ${params.metabat_opts} : ""
-            """
-            jgi_summarize_bam_contig_depths \\
-                --outputDepth ${id}.depth.txt $aln
-             
-            metabat2 -i $contigs \\
-                -t ${task.cpus} \\
-                --unbinned \\
-                -a ${id}.depth.txt ${metabatparams} \\
-                -o ${id}/bin
-            """
-        }
-        
-        process checkm {
-            tag "checkm-${id}"
-            publishDir "${params.outdir}/checkm", mode: "link"
-        
-            input:
-            set val(id), file(bins) from bins2checkM
-
-            output:
-            set val(id), file("${id}/CheckM") into checkMResults
-                
-            script:
-            """
-            checkm lineage_wf \\
-                -t ${task.cpus} -x fa \\
-                ${bins} ${id}/CheckM
-            """
-        }
-                
-    }
-    // next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
-}
+// if (params.runAssembly) {
+//     // TODO: add SE read support, adjust memory in process
+//     if (params.assembler == 'megahit') {
+//     
+//         process megahit {
+//             tag "MEGAHIT-${id}"
+//             label 'process_high'
+//             publishDir "${params.outdir}/MEGAHIT", mode: "link"
+// 
+//             input:
+//             set val(id), file(freads) from trimmedAssembly
+// 
+//             output:
+//             file("${id}/*")
+//             set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
+//     
+//             script:
+//             megahitparams = params.megahit_opts ? params.megahit_opts : ''
+//             """
+//             megahit \\
+//                 -1 ${freads[0]} -2 ${freads[1]} \\
+//                 -t ${task.cpus} \\
+//                 -o ${id} ${megahitparams}
+//             """
+//         }
+//         
+//     } else if (params.assembler == 'metaspades') {
+// 
+//         process metaspades {
+//             tag "metaSPAdes-${id}"
+//             label 'process_high'
+//             publishDir "${params.outdir}/metaSPADES", mode: "link"
+// 
+//             input:
+//             set val(id), file(freads) from trimmedAssembly
+// 
+//             output:
+//             file("${id}/*")
+//             set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
+//     
+//             script:
+//             metaspadesparams = params.metaspades_opts ? params.metaspades_opts : ''
+//             """
+//             metaspades.py -t ${task.cpus} \\
+//                 -1 ${freads[0]} -2 ${freads[1]} \\
+//                 -o ${id} ${metaspadesparams}
+//             """
+//         }
+//         
+//     } else {
+//         // We need to shut this down!
+//         // TODO: die with a message, silent stop is horrid!
+//         assembly2diamond = Channel.empty()
+//         assembly2bwaidx = Channel.empty()
+//         assembly2MetaBAT = Channel.empty()
+//     }
+//     
+//     if (params.diamondDB) {
+//     
+//         diamondDB = file(params.diamondDB)
+//         // note memory usage; DIAMOND typically requires considerable memory esp. 
+//         // for larger assemblies and databases (like nr)
+//         process diamond {
+//             tag "DIAMOND-${id}"
+//             publishDir "${params.outdir}/DIAMOND", mode: "link"
+//         
+//             input:
+//             set val(id), file(contigs) from assembly2diamond
+// 
+//             output:
+//             file("*.daa")
+//             file("*.log")
+//     
+//             script:
+//             """
+//             diamond blastx -p ${task.cpus} \\
+//                  -d ${diamondDB} \\
+//                  -q $contigs \\
+//                  -o ${id}.daa \\
+//                  --outfmt 100 \\
+//                  --tmpdir /dev/shm \\
+//                  --range-culling -F 25 \\
+//                  --top 5 \\
+//                  --evalue 1e-5 \\
+//                  --sensitive \\
+//                  -v 2> "${id}.log"
+//             """
+//         }
+//     }
+//     
+//     if (params.runMetaBAT) {
+//     
+//         process bwa_index {
+//             tag "bwa-index-${id}"
+//             publishDir "${params.outdir}/bwa-index", mode: "link"
+//         
+//             input:
+//             set val(id), file(contigs) from assembly2bwaidx
+// 
+//             output:
+//             file("${id}.*") into bwaindex
+//     
+//             script:
+//             """
+//             bwa index -p $id $contigs
+//             """
+//         }
+//         
+//         process bwa_aln {
+//             tag "bwa-aln-${id}"
+//             
+//             scratch "/scratch"
+//             
+//             input:
+//             set val(id), file(reads) from trimmedbwaAln
+//             file(idx) from bwaindex.collect()
+//             
+//             output:
+//             set val(id), file("${id}.sam") into bwa2samtools
+//     
+//             script:
+//             """
+//             bwa mem -t ${task.cpus} $id $reads > ${id}.sam 
+//             """
+//         }
+// 
+//         process samtools_sort {
+//             tag "samtools-${id}"
+//             publishDir "${params.outdir}/bwa-aln", mode: "link"
+//         
+//             input:
+//             set val(id), file(aln) from bwa2samtools
+// 
+//             output:
+//             set val(id), file("${id}.sorted.bam*") into bwa2MetaBAT2
+//             file("${id}.stats.txt")
+//     
+//             script:
+//             """
+//             samtools sort -o ${id}.sorted.bam -@ ${task.cpus} $aln
+//             samtools index ${id}.sorted.bam
+//             samtools stats ${id}.sorted.bam > ${id}.stats.txt
+//             """
+//         }
+// 
+//         process metabat2 {
+//             tag "metabat2-${id}"
+//             publishDir "${params.outdir}/metabat2", mode: "link"
+//         
+//             input:
+//             set val(id), file(aln) from bwa2MetaBAT2
+//             set val(id2), file(contigs) from assembly2MetaBAT
+// 
+//             output:
+//             set val(id), file("${id}/bin") into bins2checkM
+//             file("${id}.depth.txt")
+//                 
+//             script:
+//             metabatparams = ${params.metabat_opts} ? ${params.metabat_opts} : ""
+//             """
+//             jgi_summarize_bam_contig_depths \\
+//                 --outputDepth ${id}.depth.txt $aln
+//              
+//             metabat2 -i $contigs \\
+//                 -t ${task.cpus} \\
+//                 --unbinned \\
+//                 -a ${id}.depth.txt ${metabatparams} \\
+//                 -o ${id}/bin
+//             """
+//         }
+//         
+//         process checkm {
+//             tag "checkm-${id}"
+//             publishDir "${params.outdir}/checkm", mode: "link"
+//         
+//             input:
+//             set val(id), file(bins) from bins2checkM
+// 
+//             output:
+//             set val(id), file("${id}/CheckM") into checkMResults
+//                 
+//             script:
+//             """
+//             checkm lineage_wf \\
+//                 -t ${task.cpus} -x fa \\
+//                 ${bins} ${id}/CheckM
+//             """
+//         }
+//                 
+//     }
+//     // next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
+// }
 
 /*
  * STEP 3 - Output Description HTML
