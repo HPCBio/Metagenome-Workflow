@@ -471,6 +471,8 @@ if (params.runMetaPhlan2) {
         output:
         file("${pair_id}/*")
 
+        script:
+        runMetaPhlan2params = params.runMetaPhlan2_opts ? params.runMetaPhlan2_opts : ''
         """
         metaphlan2.py ${freads} \
             --bowtie2out ${pair_id}.bowtie2.bz2 \
@@ -551,7 +553,7 @@ if (params.runAssembly) {
 
             output:
             file("${id}/*")
-            set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
+            set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT2
     
             script:
             megahitparams = params.megahit_opts ? params.megahit_opts : ''
@@ -575,7 +577,7 @@ if (params.runAssembly) {
 
             output:
             file("${id}/*")
-            set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
+            set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT2
     
             script:
             metaspadesparams = params.metaspades_opts ? params.metaspades_opts : ''
@@ -591,7 +593,7 @@ if (params.runAssembly) {
         // TODO: die with a message, silent stop is horrid!
         assembly2diamond = Channel.empty()
         assembly2bwaidx = Channel.empty()
-        assembly2MetaBAT = Channel.empty()    
+        assembly2MetaBAT2 = Channel.empty()    
     }
     
     if (params.diamondDB) {
@@ -626,7 +628,8 @@ if (params.runAssembly) {
             """
         }
     }
-    
+     // next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
+   
     if (params.runMetaBAT) {
     
         process bwa_index {
@@ -671,7 +674,9 @@ if (params.runAssembly) {
             set val(id), file(aln) from bwa2samtools
 
             output:
-            set val(id), file("${id}.sorted.bam*") into bwa2MetaBAT2
+            //set val(id), file("${id}.sorted.bam*") into bwa2MetaBAT2
+            set val(id), file("${id}.sorted.bam") into bwa2MetaBAT2
+            file("${id}.sorted.bam.bai")
             file("${id}.stats.txt")
     
             script:
@@ -688,14 +693,14 @@ if (params.runAssembly) {
         
             input:
             set val(id), file(aln) from bwa2MetaBAT2
-            set val(id2), file(contigs) from assembly2MetaBAT
+            set val(id2), file(contigs) from assembly2MetaBAT2
 
             output:
-            set val(id), file("${id}/bin") into bins2checkM
+            set val(id), file("${id}*.fa") into bins2checkM
             file("${id}.depth.txt")
                 
             script:
-            metabatparams = ${params.metabat_opts} ? ${params.metabat_opts} : ""
+            metabat2params = params.metabat2_opts ? params.metabat2_opts : ''
             """
             jgi_summarize_bam_contig_depths \\
                 --outputDepth ${id}.depth.txt $aln
@@ -703,8 +708,8 @@ if (params.runAssembly) {
             metabat2 -i $contigs \\
                 -t ${task.cpus} \\
                 --unbinned \\
-                -a ${id}.depth.txt ${metabatparams} \\
-                -o ${id}/bin
+                -a ${id}.depth.txt \\
+                -o ${id}
             """
         }
         
@@ -722,12 +727,11 @@ if (params.runAssembly) {
             """
             checkm lineage_wf \\
                 -t ${task.cpus} -x fa \\
-                ${bins} ${id}/CheckM
+                ${workflow.launchDir}/results/metabat2 ${id}/CheckM
             """
         }
                 
     }
-    // next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
 }
 
 /*
