@@ -687,47 +687,40 @@ if (params.runAssembly) {
             """
         }
 
-        process metabat2 {
-            tag "metabat2-${id}"
-            publishDir "${params.outdir}/metabat2", mode: "link"
+        process metabat2_checkM {
+            tag "metabat2_checkM-${id}"
+            publishDir "${params.outdir}/metabat2-checkM", mode: "link"
         
             input:
             set val(id), file(aln) from bwa2MetaBAT2
             set val(id2), file(contigs) from assembly2MetaBAT2
 
             output:
-            set val(id), file("${id}*.fa") into bins2checkM
-            file("${id}.depth.txt")
+            file("*")
                 
             script:
             metabat2params = params.metabat2_opts ? params.metabat2_opts : ''
             """
+            echo step one calculate depth
+            
             jgi_summarize_bam_contig_depths \\
                 --outputDepth ${id}.depth.txt $aln
-             
+
+            echo step two calculate bins with metabat2
+
+            mkdir  ${id}_bins           
             metabat2 -i $contigs \\
                 -t ${task.cpus} \\
                 --unbinned \\
                 -a ${id}.depth.txt \\
-                -o ${id}
-            """
-        }
-        
-        process checkm {
-            tag "checkm-${id}"
-            publishDir "${params.outdir}/checkm", mode: "link"
-        
-            input:
-            set val(id), file(bins) from bins2checkM
+                -o ./${id}_bins/
 
-            output:
-            set val(id), file("${id}/CheckM") into checkMResults
-                
-            script:
-            """
+            echo step three run checkm
+            
             checkm lineage_wf \\
                 -t ${task.cpus} -x fa \\
-                ${workflow.launchDir}/results/metabat2 ${id}/CheckM
+                ./${id}_bins/ ./${id}_CheckM
+
             """
         }
                 
