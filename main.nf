@@ -51,8 +51,12 @@ if (params.help) {
 }
 
 /*
- * SET UP CONFIGURATION VARIABLES
+ * SANITY CHECKS
  */
+
+if (params.assembler != 'megahit' && params.assembler != 'metaspades' ) exit 1, "Unknown value for params.assembler"
+
+
 
 // Check if genome exists in the config file
 // if (params.genomes && params.genome && !params.genomes.containsKey(params.genome)) {
@@ -100,19 +104,19 @@ if (params.readPaths) {
             .from(params.readPaths)
             .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true) ] ] }
             .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-            .into { read_files_fastqc; read_files_trimming }
+            .into { read_files_trimming }
     } else {
         Channel
             .from(params.readPaths)
             .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true), file(row[1][1], checkIfExists: true) ] ] }
             .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-            .into { read_files_fastqc; read_files_trimming }
+            .into { read_files_trimming }
     }
 } else {
     Channel
         .fromFilePairs( params.reads, size: params.singleEnd ? 1 : 2 )
         .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-        .into { read_files_fastqc; read_files_trimming }
+        .into { read_files_trimming }
 }
 
 // Header log info
@@ -191,26 +195,25 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
 //     """
 // }
 
-/*
- * STEP 1 - FastQC
- */
-process fastqc {
-    tag "FASTQC-${id}"
-    label 'process_low'
-    publishDir "${params.outdir}/fastqc", mode: 'copy',
-        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
+// process fastqc {
+//    tag "FASTQC-${id}"
+//    label 'process_low'
+//    publishDir "${params.outdir}/fastqc", mode: 'copy',
+//        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
+//
+//    input:
+//    set val(id), file(reads) from read_files_fastqc
+//
+//    output:
+//    file "*_fastqc.{zip,html}" into fastqc_results
+//
+//    script:
+//    """
+//    fastqc --quiet --threads $task.cpus $reads
+//    """
+//}
+//
 
-    input:
-    set val(id), file(reads) from read_files_fastqc
-
-    output:
-    file "*_fastqc.{zip,html}" into fastqc_results
-
-    script:
-    """
-    fastqc --quiet --threads $task.cpus $reads
-    """
-}
 
 /*
 * Step 2. FASTP
@@ -225,9 +228,9 @@ process fastp {
     set val(id), file(reads) from read_files_trimming
 
     output:
-    set val(id), file("*.qualtrim.fastq.gz") into trimmedFASTQC, trimmedAssembly, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan, trimmedbwaAln
+    set val(id), file("*.qualtrim.fastq.gz") into trimmedAssembly, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan, trimmedbwaAln
     file "*.html"
-    file "*.json"
+    file "*.json" into trimmedMultiQC
 
     script:
     if (params.singleEnd) {
@@ -260,23 +263,25 @@ process fastp {
 * Step 3. FASTQC on trimmed files
 */
 
-process fastqc_post {
-    tag "FASTQC-post-${name}"
-    label 'process_low'
-    publishDir "${params.outdir}/fastqc-post", mode: 'copy',
-        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
-
-    input:
-    set val(name), file(reads) from trimmedFASTQC
-
-    output:
-    file "*_fastqc.{zip,html}" into fastqc_post_results
-
-    script:
-    """
-    fastqc --quiet --threads $task.cpus $reads
-    """
-}
+//process fastqc_post {
+//    tag "FASTQC-post-${name}"
+//    label 'process_low'
+//    publishDir "${params.outdir}/fastqc-post", mode: 'copy',
+//        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
+//
+//    input:
+//    set val(name), file(reads) from trimmedFASTQC
+//
+//    output:
+//    file "*_fastqc.{zip,html}" into fastqc_post_results
+//
+//    script:
+//    """
+//    fastqc --quiet --threads $task.cpus $reads
+//    """
+//}
+//
+//
 
 /*
  * Step 4: Remove host DNA
@@ -401,9 +406,6 @@ process fastqc_post {
  * Step 6: MultiQC
  */
 
-/*
- * STEP 2 - MultiQC
- */
 // process multiqc {
 //     publishDir "${params.outdir}/MultiQC", mode: 'copy'
 // 
@@ -451,6 +453,23 @@ process fastqc_post {
 //    multiqc . -f -d -m fastqc -m trimmomatic
 //    """
 // }
+
+
+process multiqc {
+    publishDir "${params.outdir}/MultiQC_ReadPrep", mode: 'copy'
+
+    input:
+    file('*') from trimmedMultiQC.collect()
+
+    output:
+    file "*"
+
+    script:    
+    """
+    multiqc .
+    """
+
+}
 
 /*
  * Step 6: Combine Reads - we keep merged reads and unmerged R1
@@ -564,8 +583,8 @@ if (params.runAssembly) {
                 -o ${id} ${megahitparams}
             """
         }
-        
-    } else if (params.assembler == 'metaspades') {
+    }  
+    if (params.assembler == 'metaspades') {
 
         process metaspades {
             tag "metaSPAdes-${id}"
@@ -588,13 +607,7 @@ if (params.runAssembly) {
             """
         }
         
-    } else {
-        // We need to shut this down!
-        // TODO: die with a message, silent stop is horrid!
-        assembly2diamond = Channel.empty()
-        assembly2bwaidx = Channel.empty()
-        assembly2MetaBAT2 = Channel.empty()    
-    }
+    } 
     
     if (params.diamondDB) {
     
