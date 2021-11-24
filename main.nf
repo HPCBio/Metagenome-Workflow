@@ -143,6 +143,7 @@ if (params.includeRemoveHost &&  params.host) {
    summary['Remove Host']      = params.includeRemoveHost
    summary['RefGenome Host']   = params.host
 }
+summary['Assembly tool']    = params.assembler
 summary['Max Resources']    = "$params.max_memory memory, $params.max_cpus cpus, $params.max_time time per job"
 if (workflow.containerEngine) summary['Container'] = "$workflow.containerEngine - $workflow.container"
 summary['Output dir']       = params.outdir
@@ -332,7 +333,7 @@ process fastp {
          file RefIndex from bowtieIdxToFilter
  
          output:
-         set pair_id, file("${pair_id}/*paired_1.fastq.gz"), file("${pair_id}/*paired_2.fastq.gz") into filterToMerge
+         set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filterToMerge
          file("${pair_id}/*unmatched_{1,2}.fastq.gz")
          file("${pair_id}/*contam_{1,2}.fastq.gz")
          file("${pair_id}/*kneaddata.log")
@@ -350,89 +351,56 @@ process fastp {
 }
 
 /*
- * Step 4: VSEARCH FASTQ Merging
+ * Step 4: VSEARCH Merging of Sanitized Reads
  */
 
-// TODO: add support
-// if (false)  {
-//     process vsearchMergePairs {
-//         executor 'slurm'
-//         cpus 12
-//         queue 'normal'
-//         memory '12 GB'
-//         module vsearchMod,pigzMod
-//         publishDir "${params.outdir}/MergePairs", mode: "link"
-// 
-//         input:
-//         set pair_id, file(read1), file(read2) from filterToMerge
-// 
-//         output:
-//         set pair_id, file("*.merged.fastq.gz") into mergedReads,mergedToCombine
-//         file("*.unmerged.R1.fastq.gz") into unmergedR1
-//         file("*.unmerged.R2.fastq.gz") into unmergedR2
-//         file("*.merged.log")
-//         file("*.summary.log")
-// 
-//         """
-//         vsearch --fastq_mergepairs \
-//             ${read1} \
-//             --reverse ${read2} \
-//             --threads ${task.cpus} \
-//             --fastqout ${pair_id}.merged.fastq \
-//             --fastqout_notmerged_fwd ${pair_id}.unmerged.R1.fastq \
-//             --fastqout_notmerged_rev ${pair_id}.unmerged.R2.fastq \
-//             --eetabbedout ${pair_id}.merged.log > ${pair_id}.summary.log 2>&1
-// 
-//         pigz -p ${task.cpus} *.fastq
-//         """
-//     }
-//     /*
-//     * Step 5. FASTQC on merged files
-//     */
-// 
-//     process runFASTQCMerged {
-//         executor 'slurm'
-//         cpus 4
-//         queue 'lowmem'
-//         memory '24 GB'
-//         module fastqcMod
-//         publishDir "${params.outdir}/FASTQC-Merged", mode: 'link'
-// 
-//         input:
-//         set pair_id, file(mergedReads) from mergedReads
-// 
-//         output:
-//         file "*fastqc.{html,zip}"
-// 
-//         """
-//         fastqc -t ${task.cpus} --noextract ${mergedReads}
-//         """
-//     }
-//     
-//     process combineReads {
-//         executor 'slurm'
-//         cpus 1
-//         queue 'normal'
-//         memory '4 GB'
-//         module multiQCMod
-//         publishDir "${params.outdir}/Combined-Reads", mode: "link"
-// 
-//         input:
-//         set pair_id, file(reads) from mergedToCombine
-//         file(unmerged) from unmergedR1
-// 
-//         output:
-//         set pair_id, file("*.combined.fastq.gz") into filteredReadsToHUMANn2,filteredReadsToMetaPhlan2,filteredReadsToCentrifuge
-// 
-//         """
-//         cat ${reads} ${unmerged} > ${pair_id}.combined.fastq.gz
-//         """
-//     }
-// 
-// } else {
-//     // TODO: make empty channels
-// }
+if (params.includeRemoveHost && params.mergeSanizited) {
 
+     process vsearchMergeSanitized {
+         publishDir "${params.outdir}/MergeSanitized", mode: "link"
+ 
+         input:
+         set pair_id, file(reads) from filterToMerge
+ 
+         output:
+         set pair_id, file("*.merged.fastq.gz") into mergedReads2QC
+         set pair_id, file("*.combined.fastq.gz") into filteredReadsToHUMANn2,filteredReadsToMetaPhlan2,filteredReadsToCentrifuge
+         file("*.gz")
+         file("*.merged.log")
+         file("*.summary.log")
+ 
+         """
+         vsearch --fastq_mergepairs \
+             ${reads[0]} \
+             --reverse ${reads[1]} \
+             --threads ${task.cpus} \
+             --fastqout ${pair_id}.merged.fastq \
+             --fastqout_notmerged_fwd ${pair_id}.unmerged.R1.fastq \
+             --fastqout_notmerged_rev ${pair_id}.unmerged.R2.fastq \
+             --eetabbedout ${pair_id}.merged.log > ${pair_id}.summary.log 2>&1
+
+         cat ${pair_id}.merged.fastq ${pair_id}.unmerged.R1.fastq > ${pair_id}.combined.fastq
+         
+         pigz -p ${task.cpus} *.fastq
+         """
+     }
+ 
+     process fastqc_MergedSanitized {
+         publishDir "${params.outdir}/fastqc_MergedSanitized", mode: 'link'
+ 
+         input:
+         set pair_id, file(mergedReads) from mergedReads2QC
+ 
+         output:
+         set pair_id, file("*.zip") into mergedReads2MultiQC
+         file "*fastqc.{html,zip}"
+ 
+         """
+         fastqc -t ${task.cpus} --noextract ${mergedReads}
+         """
+     }
+  
+ }
 
 /*
  * Step 6: MultiQC
@@ -486,8 +454,24 @@ process fastp {
 //    """
 // }
 
+process multiqc_MergedSanitized {
+    publishDir "${params.outdir}/MultiQC_MergedSanitized", mode: 'copy'
 
-process multiqc {
+    input:
+    file('*') from mergedReads2MultiQC.collect()
+
+    output:
+    file "*"
+
+    script:    
+    """
+    multiqc .
+    """
+
+}
+
+
+process multiqc_ReadPrep {
     publishDir "${params.outdir}/MultiQC_ReadPrep", mode: 'copy'
 
     input:
