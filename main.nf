@@ -54,14 +54,15 @@ if (params.help) {
  * SANITY CHECKS
  */
 
-if (params.assembler != 'megahit' && params.assembler != 'metaspades' ) exit 1, "Unknown value for params.assembler"
-
+if (params.assembler != 'megahit' && params.assembler != 'metaspades') exit 1, "Unknown value for params.assembler"
+if (params.includeRemoveHost && ! params.host) exit 1, "Must provide params.host in combination with params.includeRemoveHost"
 
 
 // Check if genome exists in the config file
 // if (params.genomes && params.genome && !params.genomes.containsKey(params.genome)) {
 //     exit 1, "The provided genome '${params.genome}' is not available in the iGenomes file. Currently the available genomes are ${params.genomes.keySet().join(", ")}"
 // }
+
 
 // TODO nf-core: Add any reference files that are needed
 // Configurable reference genomes
@@ -119,6 +120,17 @@ if (params.readPaths) {
         .into { read_files_trimming }
 }
 
+// take care of the host genome
+
+params.genomesDir   = "${workflow.workDir}/HostGenome-nf-produced"
+genomeStore                 = params.genomesDir
+
+if (params.includeRemoveHost &&  params.host) { 
+   genomeFile                  = file(params.host)
+   genomePrefix                = genomeFile.getBaseName()
+}
+
+
 // Header log info
 log.info nfcoreHeader()
 def summary = [:]
@@ -127,6 +139,10 @@ summary['Run Name']         = custom_runName ?: workflow.runName
 // TODO nf-core: Report custom parameters here
 summary['Reads']            = params.reads
 summary['Data Type']        = params.singleEnd ? 'Single-End' : 'Paired-End'
+if (params.includeRemoveHost &&  params.host) {
+   summary['Remove Host']      = params.includeRemoveHost
+   summary['RefGenome Host']   = params.host
+}
 summary['Max Resources']    = "$params.max_memory memory, $params.max_cpus cpus, $params.max_time time per job"
 if (workflow.containerEngine) summary['Container'] = "$workflow.containerEngine - $workflow.container"
 summary['Output dir']       = params.outdir
@@ -228,7 +244,7 @@ process fastp {
     set val(id), file(reads) from read_files_trimming
 
     output:
-    set val(id), file("*.qualtrim.fastq.gz") into trimmedAssembly, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan, trimmedbwaAln
+    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFilter, trimmedAssembly, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan, trimmedbwaAln
     file "*.html"
     file "*.json" into trimmedMultiQC
 
@@ -287,35 +303,51 @@ process fastp {
  * Step 4: Remove host DNA
  */
 
-// TODO: add support
-// if (false)  {
-//     process kneaddata {
-//         publishDir "${params.outdir}/Host-Filtered", mode: "link"
-// 
-//         input:
-//         set pair_id, file(read1), file(read2) from trimmedToFilter
-//         // set pair_id, file(mreads) from trimmedToFilter
-// 
-//         output:
-//         set pair_id, file("${pair_id}/*paired_1.fastq.gz"), file("${pair_id}/*paired_2.fastq.gz") into filterToMerge
-//         file("${pair_id}/*unmatched_{1,2}.fastq.gz")
-//         file("${pair_id}/*contam_{1,2}.fastq.gz")
-//         file("${pair_id}/*kneaddata.log")
-// 
-//         """
-//         kneaddata --input ${read1} --input ${read2} \
-//             --reference-db ${params.host} \
-//             --output ${pair_id} \
-//             --bypass-trim \
-//             --threads ${task.cpus}
-// 
-//         pigz -p ${task.cpus} ${pair_id}/*.fastq
-//         """
-//     }
-// } else {
-// 
-//     // TODO: skip this step and set channel appropriately 
-// }
+
+ if (params.includeRemoveHost && params.host) {
+
+     process bowtie_Index_kneaddata {
+         tag                    { gf }
+         storeDir               genomeStore
+     
+         input:
+         file gf from genomeFile
+     
+         output:
+         file "*.bt2"  into bowtieIdxToFilter
+     
+         script:
+         """
+         bowtie2-build  --quiet  --threads ${task.cpus}  -f ${gf}  ${genomePrefix} 
+         """
+     }
+
+
+
+     process kneaddata {
+         publishDir "${params.outdir}/Host-Filtered", mode: "link"
+ 
+         input:
+         set pair_id, file(reads)  from trimmedToFilter
+         file RefIndex from bowtieIdxToFilter
+ 
+         output:
+         set pair_id, file("${pair_id}/*paired_1.fastq.gz"), file("${pair_id}/*paired_2.fastq.gz") into filterToMerge
+         file("${pair_id}/*unmatched_{1,2}.fastq.gz")
+         file("${pair_id}/*contam_{1,2}.fastq.gz")
+         file("${pair_id}/*kneaddata.log")
+ 
+         """
+         kneaddata --input ${reads[0]} --input ${reads[1]} \
+             --reference-db ${genomePrefix} \
+             --output ${pair_id} \
+             --bypass-trim \
+             --threads ${task.cpus}
+ 
+         pigz -p ${task.cpus} ${pair_id}/*.fastq
+         """
+     }
+}
 
 /*
  * Step 4: VSEARCH FASTQ Merging
