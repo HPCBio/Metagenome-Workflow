@@ -328,7 +328,7 @@ if (! params.includeRemoveHost) {
          set pair_id, file(reads)  from trimmedToFakeSanitize
  
          output:
-         set pair_id, file("*_trimmed_R1.fastq.gz") into filteredToMerge,filteredToAssembly,filteredToBwa,filteredToKraken
+         set pair_id, file("*_trimmed_R{1,2}.fastq.gz") into filteredToMerge,filteredToAssembly,filteredToBwa,filteredToKraken
          
          """           
          cp ${reads[0]} ${pair_id.simpleName}_trimmed_R1.fastq.gz 
