@@ -516,7 +516,7 @@ if (params.runAssembly) {
 }
 
 /*
- * Step 7: Assembly
+ * Step 7: Diamond 
  */
     
  if (params.runDiamond && params.diamondDB) {
