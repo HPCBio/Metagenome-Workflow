@@ -51,12 +51,13 @@ if (params.help) {
 }
 
 /*
- * SANITY CHECKS
+ * SANITY CHECKS FOR OPTIONAL STEPS
  */
 
-if (params.assembler != 'megahit' && params.assembler != 'metaspades') exit 1, "Unknown value for params.assembler"
-if (params.includeRemoveHost && ! params.host) exit 1, "Must provide params.host in combination with params.includeRemoveHost"
-
+if (params.assembler != 'megahit' && params.assembler != 'metaspades') exit 1, "Unknown value for param assembler"
+if (params.includeRemoveHost && ! params.host) exit 1, "Must provide params.host in combination with param includeRemoveHost"
+if (params.runKraken2 && ! params.Kraken2DB) exit 1, "Must provide params.Kraken2DB in combination with param runKraken2"
+if (params.runDiamond && ! params.diamondDB) exit 1, "Must provide params.diamondDB in combination with param runDiamond"
 
 // Check if genome exists in the config file
 // if (params.genomes && params.genome && !params.genomes.containsKey(params.genome)) {
@@ -136,14 +137,20 @@ log.info nfcoreHeader()
 def summary = [:]
 if (workflow.revision) summary['Pipeline Release'] = workflow.revision
 summary['Run Name']         = custom_runName ?: workflow.runName
-// TODO nf-core: Report custom parameters here
+// nf-core: Report custom parameters here
 summary['Reads']            = params.reads
 summary['Data Type']        = params.singleEnd ? 'Single-End' : 'Paired-End'
-if (params.includeRemoveHost &&  params.host) {
-   summary['Remove Host']      = params.includeRemoveHost
-   summary['RefGenome Host']   = params.host
-}
-summary['Assembly tool']    = params.assembler
+summary['Remove Host']      = params.includeRemoveHost
+if (params.includeRemoveHost &&  params.host) { summary['RefGenome Host']   = params.host }
+summary['Run Kraken2']      = params.runKraken2
+if (params.runKraken2 && params.Kraken2DB)    { summary['Kraken2 DB']   = params.Kraken2DB }
+summary['Run Diamond']      = params.runDiamond
+if (params.runDiamond && params.diamondDB)    { summary['Diamond DB']   = params.diamondDB }
+summary['Run MetaPhaln2']   = params.runMetaPhlan2
+summary['Run Assembly']     = params.runAssembly
+if (params.runAssembly && params.assembler)   { summary['Assembly tool'] = params.assembler }
+summary['Run MetaBAT']      = params.runMetaBAT
+// nf-core: Report common parameters here
 summary['Max Resources']    = "$params.max_memory memory, $params.max_cpus cpus, $params.max_time time per job"
 if (workflow.containerEngine) summary['Container'] = "$workflow.containerEngine - $workflow.container"
 summary['Output dir']       = params.outdir
@@ -212,40 +219,22 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
 //     """
 // }
 
-// process fastqc {
-//    tag "FASTQC-${id}"
-//    label 'process_low'
-//    publishDir "${params.outdir}/fastqc", mode: 'copy',
-//        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
-//
-//    input:
-//    set val(id), file(reads) from read_files_fastqc
-//
-//    output:
-//    file "*_fastqc.{zip,html}" into fastqc_results
-//
-//    script:
-//    """
-//    fastqc --quiet --threads $task.cpus $reads
-//    """
-//}
-//
-
 
 /*
-* Step 2. FASTP
+* Step 1. Trim Reads with FASTP
 */
 
 process fastp {
     tag "fastp-${id}"
 	label 'process_low'
-    publishDir "${params.outdir}/Trimmed-Reads-FastP", mode: 'link'
+    publishDir "${params.outdir}/1-TrimReadsFastP", mode: 'link'
 
     input:
     set val(id), file(reads) from read_files_trimming
 
     output:
-    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFilter, trimmedAssembly, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan, trimmedbwaAln
+//    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFilter, trimmedAssembly, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan, trimmedbwaAln
+    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFilter, trimmedToFakeSanitize
     file "*.html"
     file "*.json" into trimmedMultiQC
 
@@ -276,32 +265,9 @@ process fastp {
     }
 }
 
-/*
-* Step 3. FASTQC on trimmed files
-*/
-
-//process fastqc_post {
-//    tag "FASTQC-post-${name}"
-//    label 'process_low'
-//    publishDir "${params.outdir}/fastqc-post", mode: 'copy',
-//        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
-//
-//    input:
-//    set val(name), file(reads) from trimmedFASTQC
-//
-//    output:
-//    file "*_fastqc.{zip,html}" into fastqc_post_results
-//
-//    script:
-//    """
-//    fastqc --quiet --threads $task.cpus $reads
-//    """
-//}
-//
-//
 
 /*
- * Step 4: Remove host DNA
+ * Step 2: Remove host DNA
  */
 
 
@@ -326,16 +292,16 @@ process fastp {
 
 
      process kneaddata {
-         publishDir "${params.outdir}/Host-Filtered", mode: "link"
+         tag "kneaddata-${pair_id}"
+         publishDir "${params.outdir}/2-SanitizeKneadData", mode: "copy"
  
          input:
          set pair_id, file(reads)  from trimmedToFilter
          file RefIndex from bowtieIdxToFilter
  
          output:
-         set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filterToMerge
-         file("${pair_id}/*unmatched_{1,2}.fastq.gz")
-         file("${pair_id}/*contam_{1,2}.fastq.gz")
+         set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToMerge,filteredToAssembly,filteredToBwa,filteredToKraken
+         file("${pair_id}/*fastq.gz")
          file("${pair_id}/*kneaddata.log")
  
          """
@@ -350,158 +316,94 @@ process fastp {
      }
 }
 
-/*
- * Step 4: VSEARCH Merging of Sanitized Reads
- */
+if (! params.includeRemoveHost) {
 
-if (params.includeRemoveHost && params.mergeSanizited) {
+// need a fake process to connect the channels
 
-     process vsearchMergeSanitized {
-         publishDir "${params.outdir}/MergeSanitized", mode: "link"
+    process fakeSanitize {
+         tag "kneaddata-${pair_id}"
+         publishDir "${params.outdir}/2-SanitizeKneadData", mode: "copy"
  
          input:
-         set pair_id, file(reads) from filterToMerge
+         set pair_id, file(reads)  from trimmedToFakeSanitize
  
          output:
-         set pair_id, file("*.merged.fastq.gz") into mergedReads2QC
-         set pair_id, file("*.combined.fastq.gz") into filteredReadsToHUMANn2,filteredReadsToMetaPhlan2,filteredReadsToCentrifuge
-         file("*.gz")
-         file("*.merged.log")
-         file("*.summary.log")
- 
-         """
-         vsearch --fastq_mergepairs \
-             ${reads[0]} \
-             --reverse ${reads[1]} \
-             --threads ${task.cpus} \
-             --fastqout ${pair_id}.merged.fastq \
-             --fastqout_notmerged_fwd ${pair_id}.unmerged.R1.fastq \
-             --fastqout_notmerged_rev ${pair_id}.unmerged.R2.fastq \
-             --eetabbedout ${pair_id}.merged.log > ${pair_id}.summary.log 2>&1
-
-         cat ${pair_id}.merged.fastq ${pair_id}.unmerged.R1.fastq > ${pair_id}.combined.fastq
+         set pair_id, file("*_trimmed_R1.fastq.gz") into filteredToMerge,filteredToAssembly,filteredToBwa,filteredToKraken
          
-         pigz -p ${task.cpus} *.fastq
-         """
-     }
+         """           
+         cp ${reads[0]} ${pair_id.simpleName}_trimmed_R1.fastq.gz 
+         cp ${reads[1]} ${pair_id.simpleName}_trimmed_R2.fastq.gz         
+         """   
+    }
+}
  
-     process fastqc_MergedSanitized {
-         publishDir "${params.outdir}/fastqc_MergedSanitized", mode: 'link'
+/*
+ * Step 3: VSEARCH Merging Reads
+ */
+
+process vsearchMergeSanitized {
+    tag "vsearch-${pair_id}"
+    publishDir "${params.outdir}/3-MergeSanitized", mode: "copy"
+
+    input:
+    set pair_id, file(reads) from filteredToMerge
+
+    output:
+    set pair_id, file("*.merged.fastq.gz") into mergedToQC
+    set pair_id, file("*.combined.fastq.gz") into mergedToHUMANn2,mergedToMetaPhlan2,mergedToCentrifuge
+    file("*.gz")
+    file("*.merged.log")
+    file("*.summary.log")
+
+    """
+    vsearch --fastq_mergepairs \
+        ${reads[0]} \
+        --reverse ${reads[1]} \
+        --threads ${task.cpus} \
+        --fastqout ${pair_id}.merged.fastq \
+        --fastqout_notmerged_fwd ${pair_id}.unmerged.R1.fastq \
+        --fastqout_notmerged_rev ${pair_id}.unmerged.R2.fastq \
+        --eetabbedout ${pair_id}.merged.log > ${pair_id}.summary.log 2>&1
+
+    cat ${pair_id}.merged.fastq ${pair_id}.unmerged.R1.fastq > ${pair_id}.combined.fastq
+    
+    pigz -p ${task.cpus} *.fastq
+    """
+}
  
-         input:
-         set pair_id, file(mergedReads) from mergedReads2QC
- 
-         output:
-         set pair_id, file("*.zip") into mergedReads2MultiQC
-         file "*fastqc.{html,zip}"
- 
-         """
-         fastqc -t ${task.cpus} --noextract ${mergedReads}
-         """
-     }
+process fastqc_MergedSanitized {
+    tag "fastQCMergedSanitized-${pair_id}"
+    publishDir "${params.outdir}/QC_MergedSanitized", mode: 'link'
+
+    input:
+    set pair_id, file(mergedReads) from mergedToQC
+
+    output:
+    set pair_id, file("*.zip") into mergedReads2MultiQC
+    file "*fastqc.{html,zip}"
+
+    """
+    fastqc -t ${task.cpus} --noextract ${mergedReads}
+    """
+}
   
- }
+
+
 
 /*
- * Step 6: MultiQC
- */
-
-// process multiqc {
-//     publishDir "${params.outdir}/MultiQC", mode: 'copy'
-// 
-//     input:
-//     file multiqc_config from ch_multiqc_config
-//     // TODO nf-core: Add in log files from your new processes for MultiQC to find!
-//     
-//     file ("fastqc/*") from fastqc_results.collect().ifEmpty([])
-//     file ("software_versions/*") from software_versions_yaml.collect()
-//     file workflow_summary from create_workflow_summary(summary)
-// 
-//     output:
-//     file "*multiqc_report.html" into multiqc_report
-//     file "*_data"
-//     file "multiqc_plots"
-// 
-//     script:
-//     rtitle = custom_runName ? "--title \"$custom_runName\"" : ''
-//     rfilename = custom_runName ? "--filename " + custom_runName.replaceAll('\\W','_').replaceAll('_+','_') + "_multiqc_report" : ''
-//     // TODO nf-core: Specify which MultiQC modules to use with -m for a faster run time
-//     """
-//     multiqc -f $rtitle $rfilename --config $multiqc_config .
-//     """
-// }
-
-// process runMultiQC {
-//    executor 'slurm'
-//    cpus 1
-//    queue 'normal'
-//    memory '4 GB'
-//    module multiQCMod
-//    publishDir "${params.outdir}/MultiQC", mode: "link"
-// 
-//    input:
-//    file ('RawFASTQC/*') from rawFastqcResults.collect()
-//    file ('Trimmomatic/*') from trimmedFastqLogs.collect()
-//    file ('TrimmedFASTQC/*') from trimmedFastqcResults.collect()
-// 
-//    output:
-//    file '*multiqc_report.html' into multiqc_report
-//    file '*_data' into multiqc_data
-//    file '.command.err' into multiqc_stderr
-// 
-//    """
-//    multiqc . -f -d -m fastqc -m trimmomatic
-//    """
-// }
-
-process multiqc_MergedSanitized {
-    publishDir "${params.outdir}/MultiQC_MergedSanitized", mode: 'copy'
-
-    input:
-    file('*') from mergedReads2MultiQC.collect()
-
-    output:
-    file "*"
-
-    script:    
-    """
-    multiqc .
-    """
-
-}
-
-
-process multiqc_ReadPrep {
-    publishDir "${params.outdir}/MultiQC_ReadPrep", mode: 'copy'
-
-    input:
-    file('*') from trimmedMultiQC.collect()
-
-    output:
-    file "*"
-
-    script:    
-    """
-    multiqc .
-    """
-
-}
-
-/*
- * Step 6: Combine Reads - we keep merged reads and unmerged R1
+ * Step 4: Phylogenetic profiling
  */
 
 
-// TODO: add PE read support
 if (params.runMetaPhlan2) {
 
     process metaphlan2 {
         tag "Metaphlan2-${pair_id}"
         label 'process_high'
-        publishDir "${params.outdir}/MetaPhlan2", mode: "link"
+        publishDir "${params.outdir}/4-MetaPhlan2", mode: "copy"
 
         input:
-        set val(pair_id), file(freads) from trimmedMetaphlan2
+        set val(pair_id), file(freads) from mergedToMetaPhlan2
 
         output:
         file("${pair_id}/*")
@@ -509,70 +411,55 @@ if (params.runMetaPhlan2) {
         script:
         runMetaPhlan2params = params.runMetaPhlan2_opts ? params.runMetaPhlan2_opts : ''
         """
-        metaphlan2.py ${freads} \
-            --bowtie2out ${pair_id}.bowtie2.bz2 \
-            --nproc ${task.cpus} \
-            --input_type fastq \
-            --biom {pair_id}.biom \
-            --tmp_dir /scratch \
-            -o ${pair_id}.profile.txt
+        metaphlan2.py ${runMetaPhlan2params} \\
+            --bowtie2out ${pair_id}.bowtie2.bz2 \\
+            --nproc ${task.cpus} \\
+            --input_type fastq \\
+            --biom {pair_id}.biom \\
+            --tmp_dir /scratch \\
+            -o ${pair_id}.profile.txt \\
+             ${freads}
         """
     }
 }
 
-// if (params.runHUMANN2) {
-// 
-//     process metaphlan2 {
-//         executor 'slurm'
-//         cpus 24
-//         queue 'normal'
-//         memory '72 GB'
-//         module humann2Mod
-//         publishDir "${params.outdir}/HUMANn2", mode: "link"
-// 
-//         input:
-//         set pair_id, file(freads) from filteredReadsToMetaPhlan2
-// 
-//         output:
-//         file("${pair_id}/*")
-// 
-//         """
-//         metaphlan2.py ${freads} \
-//             --bowtie2out ${pair_id}.bowtie2.bz2 \
-//             --nproc ${task.cpus} \
-//             --input_type fastq \
-//             --biom {pair_id}.biom \
-//             --tmp_dir /scratch \
-//             -o ${pair_id}.profile.txt
-//         """
-//     }
-// 
-// }
+/*
+ * Step 5: taxonomic classification
+ */
 
-// if (params.runKraken2) {
-// 
-//     process kraken2 {
-//         executor 'slurm'
-//         cpus 24
-//         queue 'normal'
-//         memory '72 GB'
-//         module krakenMod
-//         publishDir "${params.outdir}/Kraken2", mode: "link"
-// 
-//         input:
-//         set pair_id, file(freads) from filteredReadsToMetaPhlan2
-// 
-//         output:
-//         file("${pair_id}.profile.txt")
-//         file("${pair_id}.bowtie2.bz2")
-//         file("${pair_id}.biom")
-// 
-//         """
-// 
-//         """
-//     }
-// 
-// }
+
+ if (params.runKraken2 && params.Kraken2DB) {
+
+     kraken2DB = file(params.Kraken2DB)
+
+     process kraken2 {
+         tag "kraken2-${pair_id}"
+         publishDir "${params.outdir}/5-Kraken2", mode: "copy"
+ 
+         input:
+         set pair_id, file(freads) from filteredToKraken
+ 
+         output:
+         file("${pair_id}.kraken2*")
+
+ 
+         """
+         kraken2 \\
+	       --db ${kraken2DB} \\
+	       --threads ${task.cpus} \\
+	       --output ${pair_id}.kraken2 \\
+	       --paired \\
+         --report ${pair_id}.kraken2.report \\
+	       ${freads[0]} ${freads[1]}
+         """
+     }
+ 
+ }
+
+/*
+ * Step 6: Assembly
+ */
+
 
 if (params.runAssembly) {
     // TODO: add SE read support, adjust memory in process
@@ -581,10 +468,10 @@ if (params.runAssembly) {
         process megahit {
             tag "MEGAHIT-${id}"
             label 'process_high'
-            publishDir "${params.outdir}/MEGAHIT", mode: "link"
+            publishDir "${params.outdir}/6-MEGAHIT", mode: "copy"
 
             input:
-            set val(id), file(freads) from trimmedAssembly
+            set val(id), file(freads) from filteredToAssembly
 
             output:
             file("${id}/*")
@@ -600,15 +487,16 @@ if (params.runAssembly) {
             """
         }
     }  
+
     if (params.assembler == 'metaspades') {
 
         process metaspades {
             tag "metaSPAdes-${id}"
             label 'process_high'
-            publishDir "${params.outdir}/metaSPADES", mode: "link"
+            publishDir "${params.outdir}/6-metaSPADES", mode: "copy"
 
             input:
-            set val(id), file(freads) from trimmedAssembly
+            set val(id), file(freads) from filteredToAssembly
 
             output:
             file("${id}/*")
@@ -624,15 +512,21 @@ if (params.runAssembly) {
         }
         
     } 
+
+}
+
+/*
+ * Step 7: Assembly
+ */
     
-    if (params.diamondDB) {
+ if (params.runDiamond && params.diamondDB) {
     
         diamondDB = file(params.diamondDB)
         // note memory usage; DIAMOND typically requires considerable memory esp. 
         // for larger assemblies and databases (like nr)
         process diamond {
             tag "DIAMOND-${id}"
-            publishDir "${params.outdir}/DIAMOND", mode: "link"
+            publishDir "${params.outdir}/7-DIAMOND", mode: "copy"
         
             input:
             set val(id), file(contigs) from assembly2diamond
@@ -656,14 +550,19 @@ if (params.runAssembly) {
                  -v 2> "${id}.log"
             """
         }
-    }
-     // next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
+}
+
+/*
+ * Step 8: Taxonomic binning
+ */
+
+// next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
    
-    if (params.runMetaBAT) {
+if (params.runMetaBAT) {
     
         process bwa_index {
-            tag "bwa-index-${id}"
-            publishDir "${params.outdir}/bwa-index", mode: "link"
+            tag "MetaBAT-bwa-index-${id}"
+            publishDir "${params.outdir}/8-MetaBAT-bwa-aln", mode: "copy"
         
             input:
             set val(id), file(contigs) from assembly2bwaidx
@@ -678,26 +577,26 @@ if (params.runAssembly) {
         }
         
         process bwa_aln {
-            tag "bwa-aln-${id}"
-            
+            tag "MetaBAT-bwa-aln-${id}"
+            publishDir "${params.outdir}/8-MetaBAT-bwa-aln", mode: "copy"           
             scratch "/scratch"
             
             input:
-            set val(id), file(reads) from trimmedbwaAln
-            file(idx) from bwaindex.collect()
+            set val(id), file(freads) from filteredToBwa
+            file(bwaidx) from bwaindex.collect()
             
             output:
             set val(id), file("${id}.sam") into bwa2samtools
     
             script:
             """
-            bwa mem -t ${task.cpus} $id $reads > ${id}.sam 
+            bwa mem -t ${task.cpus} $bwaidx ${freads[0]} ${freads[1]} > ${id}.sam 
             """
         }
 
         process samtools_sort {
-            tag "samtools-${id}"
-            publishDir "${params.outdir}/bwa-aln", mode: "link"
+            tag "MetaBAT-samtools-${id}"
+            publishDir "${params.outdir}/8-MetaBAT-bwa-aln", mode: "copy"
         
             input:
             set val(id), file(aln) from bwa2samtools
@@ -717,8 +616,8 @@ if (params.runAssembly) {
         }
 
         process metabat2_checkM {
-            tag "metabat2_checkM-${id}"
-            publishDir "${params.outdir}/metabat2-checkM", mode: "link"
+            tag "MetaBAT_checkM-${id}"
+            publishDir "${params.outdir}/8-MetaBAT-checkM", mode: "copy"
         
             input:
             set val(id), file(aln) from bwa2MetaBAT2
@@ -753,8 +652,29 @@ if (params.runAssembly) {
             """
         }
                 
-    }
 }
+
+/*
+ * Step x: MultiQC
+ */
+
+process multiqc_ReadPrep {
+    publishDir "${params.outdir}/QC_ReadPrep", mode: 'copy'
+
+    input:
+    file ('Trimmed/*') from trimmedMultiQC.collect()
+    file('SanitizedMerged/*') from mergedReads2MultiQC.collect()
+
+    output:
+    file "*"
+
+    script:    
+    """
+    multiqc . -f -d
+    """
+
+}
+
 
 /*
  * STEP 3 - Output Description HTML
