@@ -24,19 +24,43 @@ def helpMessage() {
       --reads                       Path to input data (must be surrounded with quotes)
       -profile                      Configuration profile to use. Can use multiple (comma separated)
                                     Available: conda, docker, singularity, awsbatch, test and more.
+    Filtering Options:
+      --includeRemoveHost           To enable the pipeline to run this analysis with Kneadata. Possible values: true, false. Default: false.
+      --host                        Path to host database to use for filtering reads. It should be in fasta format.
+      --KneadDataOpts               Custome parameters that should be added to the command line. For example:  --bypass-trf 
+      --mergeSanizited              To enable vsearch merge. Possible values: true, false. Default: false.
 
-    Options:
-      --singleEnd                   Specifies that the input is single end reads
+    Kraken Options:      
+      --runKraken2                  To enable the pipeline to run this analysis. Possible values: true, false. Default: false.
+      --Kraken2DB                   It should be the path of a folder containing a kraken-formatted database
 
-    References                      If not specified in the configuration file or you wish to overwrite any of the references.
-      --host                        Path to host database
+    Assembly Options:
+      --runAssembly                 To enable the pipeline to run this analysis. Possible values: true, false. Default: false.
+      --assembler                   Assembly tool. Possible values: megahit, metaspades.
+      
+    Diamond Options:
+      --runDiamond                  To enable the pipeline to run this analysis. Possible values: true, false. Default: false. Must also enable assembly.
+      --diamondDB                   Path to the Diamond database to use for taxonomic assignment. It should be diamond-indexed.
+    
+    Phylogenetic profiling and Taxonomic binning options
+      --runMetaPhlan2               To enable the pipeline to run this analysis. Possible values: true, false. Default: false. Must also enable filtering.  
+      --runMetaBAT                  To enable the pipeline to run this analysis. Possible values: true, false. Default: false. Must also enable assembly.   
+
+    Blobtools Options:
+      --runBlobtools                To enable the pipeline to run this analysis. Possible values: true, false. Default: false. Must also enable assembly,Diamond.
+      --blobscript                  Path to daa_to_tagc.pl
+      --blobDB                      Path to the Diamond database to use for taxonomic assignment. It should be diamond-indexed.
+      --blobTaxIds                  Path to the tabular file with taxids that is companion to the blobDB.
+      --blobphylum                  Path to the colors_phylum.txt file
+      --blobsuperkingdom            Path to the colors_Superkingdom.txt file
 
     Other options:
-      --outdir                      The output directory where the results will be saved
+      --singleEnd                   Specifies that the input is single end reads. Default false
+      --outdir                      Path of the output directory where the results will be saved
       --email                       Set this parameter to your e-mail address to get a summary e-mail with details of the run sent to you when the workflow exits
       --email_on_fail               Same as --email, except only send mail if the workflow is not successful
       -name                         Name for the pipeline run. If not specified, Nextflow will automatically generate a random mnemonic.
-
+  
     AWSBatch options:
       --awsqueue                    The AWSBatch JobQueue that needs to be set when running on AWSBatch
       --awsregion                   The AWS Region for your AWS Batch job to run on
