@@ -317,16 +317,19 @@ process fastp {
  
          output:
          //set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToMerge,filteredToAssembly,filteredToKraken,filteredToBwa
-         set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToMerge,filteredToAssembly,filteredToKraken
+         set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToMerge,filteredToAssembly,filteredToKraken,filteredToBwa
          file("${pair_id}/*fastq.gz")
          file("${pair_id}/*kneaddata.log")
- 
+
+         script: 
+         runKneadDataparams = params.KneadDataOpts ? params.KneadDataOpts : ''
          """
-         kneaddata --input ${reads[0]} --input ${reads[1]} \
-             --reference-db ${genomePrefix} \
-             --output ${pair_id} \
-             --bypass-trim \
-             --threads ${task.cpus}
+         kneaddata --input ${reads[0]} --input ${reads[1]} \\
+             --reference-db ${genomePrefix} \\
+             --output ${pair_id} \\
+             --bypass-trim \\
+             --decontaminate-pairs lenient \\
+             --threads ${task.cpus} ${runKneadDataparams}
  
          pigz -p ${task.cpus} ${pair_id}/*.fastq
          """
@@ -358,53 +361,55 @@ if (! params.includeRemoveHost) {
  * Step 3: VSEARCH Merging Reads
  */
 
-process vsearchMergeSanitized {
-    tag "vsearch-${pair_id}"
-    publishDir "${params.outdir}/3-MergeSanitized", mode: "copy"
+if (params.mergeSanizited ) {
 
-    input:
-    set pair_id, file(reads) from filteredToMerge
-
-    output:
-    set pair_id, file("*.merged.fastq.gz") into mergedToQC
-    set pair_id, file("*.combined.fastq.gz") into mergedToHUMANn2,mergedToMetaPhlan2,mergedToCentrifuge
-    file("*.gz")
-    file("*.merged.log")
-    file("*.summary.log")
-
-    """
-    vsearch --fastq_mergepairs \
-        ${reads[0]} \
-        --reverse ${reads[1]} \
-        --threads ${task.cpus} \
-        --fastqout ${pair_id}.merged.fastq \
-        --fastqout_notmerged_fwd ${pair_id}.unmerged.R1.fastq \
-        --fastqout_notmerged_rev ${pair_id}.unmerged.R2.fastq \
-        --eetabbedout ${pair_id}.merged.log > ${pair_id}.summary.log 2>&1
-
-    cat ${pair_id}.merged.fastq ${pair_id}.unmerged.R1.fastq > ${pair_id}.combined.fastq
+    process vsearchMergeSanitized {
+        tag "vsearch-${pair_id}"
+        publishDir "${params.outdir}/3-MergeSanitized", mode: "copy"
     
-    pigz -p ${task.cpus} *.fastq
-    """
-}
- 
-process fastqc_MergedSanitized {
-    tag "fastQCMergedSanitized-${pair_id}"
-    publishDir "${params.outdir}/QC_MergedSanitized", mode: 'link'
-
-    input:
-    set pair_id, file(mergedReads) from mergedToQC
-
-    output:
-    set pair_id, file("*.zip") into mergedReads2MultiQC
-    file "*fastqc.{html,zip}"
-
-    """
-    fastqc -t ${task.cpus} --noextract ${mergedReads}
-    """
-}
+        input:
+        set pair_id, file(reads) from filteredToMerge
+    
+        output:
+        set pair_id, file("*.merged.fastq.gz") into mergedToQC
+        set pair_id, file("*.combined.fastq.gz") into mergedToHUMANn2,mergedToMetaPhlan2,mergedToCentrifuge
+        file("*.gz")
+        file("*.merged.log")
+        file("*.summary.log")
+    
+        """
+        vsearch --fastq_mergepairs \
+            ${reads[0]} \
+            --reverse ${reads[1]} \
+            --threads ${task.cpus} \
+            --fastqout ${pair_id}.merged.fastq \
+            --fastqout_notmerged_fwd ${pair_id}.unmerged.R1.fastq \
+            --fastqout_notmerged_rev ${pair_id}.unmerged.R2.fastq \
+            --eetabbedout ${pair_id}.merged.log > ${pair_id}.summary.log 2>&1
+    
+        cat ${pair_id}.merged.fastq ${pair_id}.unmerged.R1.fastq > ${pair_id}.combined.fastq
+        
+        pigz -p ${task.cpus} *.fastq
+        """
+    }
+     
+    process fastqc_MergedSanitized {
+        tag "fastQCMergedSanitized-${pair_id}"
+        publishDir "${params.outdir}/QC_MergedSanitized", mode: 'link'
+    
+        input:
+        set pair_id, file(mergedReads) from mergedToQC
+    
+        output:
+        set pair_id, file("*.zip") optional true into mergedReads2MultiQC
+        file "*fastqc.{html,zip}"
+    
+        """
+        fastqc -t ${task.cpus} --noextract ${mergedReads}
+        """
+    }
   
-
+}
 
 
 /*
