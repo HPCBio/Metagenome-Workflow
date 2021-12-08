@@ -717,7 +717,7 @@ if (params.runMetaBAT) {
             checkm lineage_wf \\
                 -t ${task.cpus} \\
                 -x fa \\
-                ./${id}_bins/ ./${id}_CheckM
+                ./${id}_bins/ ./${id}_CheckM > ${id}_CheckM.log
 
             """
         }
