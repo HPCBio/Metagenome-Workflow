@@ -191,21 +191,24 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
 //     """
 // }
 
-
 /*
  * STEP 1 - FastQC
  */
+
 process fastqc {
-    tag "FASTQC-${id}"
+    tag "FastQC-${id}"
     label 'process_low'
     publishDir "${params.outdir}/fastqc", mode: 'copy',
         saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
 
     input:
-    set val(id), file(reads) from read_files_fastqc
+    tuple val(id), file(reads) from read_files_fastqc
+
+    when:
+    !params.skip_fastqc
 
     output:
-    file "*_fastqc.{zip,html}" into fastqc_results
+    file "*_fastqc.{zip,html}" into rawFastQCResults
 
     script:
     """
@@ -220,15 +223,15 @@ process fastqc {
 process fastp {
     tag "fastp-${id}"
 	label 'process_low'
-    publishDir "${params.outdir}/Trimmed-Reads-FastP", mode: 'link'
+    publishDir "${params.outdir}/FastP", mode: 'link'
 
     input:
-    set val(id), file(reads) from read_files_trimming
+    tuple val(id), file(reads) from read_files_trimming
 
     output:
-    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFASTQC, trimmedToKneaddata
-    file "*.html"
-    file "*.json"
+    tuple val(id), file("*.qualtrim.fastq.gz") into trimmedToFastQC, trimmedToKneaddata, trimmedToNonpareilPrep
+    file "${id}.fastp.html"
+    file "${id}.fastp.json" into fastpResults
 
     script:
     if (params.singleEnd) {
@@ -239,7 +242,7 @@ process fastp {
             --thread ${task.cpus} \\
             --html ${id}.fastp.html \\
             --json ${id}.fastp.json \\
-            ${params.fastpOptions} > ${id}.trimmomatic.runlog 2>&1
+            ${params.fastpOptions} > ${id}.fastp.runlog 2>&1
         """
     } else {
         """
@@ -252,7 +255,7 @@ process fastp {
             --html ${id}.fastp.html \\
             --json ${id}.fastp.json \\
             --thread ${task.cpus} \\
-            ${params.fastpOptions} > ${id}.trimmomatic.runlog 2>&1
+            ${params.fastpOptions} > ${id}.fastp.runlog 2>&1
         """
     }
 }
@@ -262,22 +265,132 @@ process fastp {
 */
 
 process fastqc_post {
-    tag "FASTQC-post-${name}"
+    tag "FASTQC-post-${id}"
     label 'process_low'
     publishDir "${params.outdir}/fastqc-post", mode: 'copy',
         saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
 
     input:
-    set val(name), file(reads) from trimmedToFASTQC
+    set val(id), file(reads) from trimmedToFastQC
 
     output:
-    file "*_fastqc.{zip,html}" into fastqc_post_results
+    file "*_fastqc.{zip,html}" into trimmedFastQCResults
+
+    when:
+    !params.skip_fastqc
 
     script:
     """
     fastqc --quiet --threads ${task.cpus} $reads
     """
 }
+
+process multiqc_ReadPrep {
+    memory '24 GB'
+    publishDir "${params.outdir}/MultiQC", mode: "link"
+
+    input:
+    file('RawFastQC/*') from rawFastQCResults.collect().ifEmpty([])
+    file('FASTP/*') from fastpResults.collect().ifEmpty([])
+    file('TrimmedFastQC/*') from trimmedFastQCResults.collect().ifEmpty([])
+
+    output:
+    file '*multiqc_report.html' into multiqc_report
+    file '*_data' into multiqc_data
+    file '.command.err' into multiqc_stderr
+
+    script:
+    """
+    multiqc .
+    """
+}
+
+process prepNonpareil {
+    tag {"NPPrep:${id}"}
+    // TODO: we don't publish these but could if needed
+    publishDir "${params.outdir}/Nonpareil", mode: "copy"
+
+    input:
+    tuple(id), file(reads) from trimmedToNonpareilPrep
+
+    output:
+    tuple val(id), file("${id}.fastq") into trimmedToNonpareil
+
+    script:
+    """
+    # nonpareil requires either unzipped FASTQ or FASTA; conversion using
+    # seqkit is probably easier and smaller if files are left over seqkit 
+
+    seqkit seq ${reads[0]} -j ${task.cpus} -m 30 > ${id}.fastq 2> ${id}.seqkit.log
+    """
+}
+
+process runNonpareil {
+    tag {"Nonpareil:${id}"}
+    publishDir "${params.outdir}/Nonpareil", mode: "copy"
+
+    input:
+    tuple(id), file(fastq) from trimmedToNonpareil
+
+    output:
+    file("${id}.np{o,a,c,l}") into plotNP
+
+    script:
+    // TODO: several settings could be parameterized
+
+    """
+    nonpareil -s ${fastq} \
+        -T kmer -f fastq \
+        -t ${task.cpus} \
+        -o ${id}.npo \
+        -L 75 \
+        -r 1234 \
+        -b ${id} 2> ${id}.runlog
+    """
+}
+
+
+// process PlotNonpareil {
+//     tag {"Nonpareil:${id}"}
+//     publishDir "${params.outdir}/Nonpareil", mode: "copy"
+
+//     input:
+//     tuple(id), file(np) from plotNP
+
+//     output:
+//     file("${id}.np{o,a,c,l}")
+
+//     script:
+//     """
+//     #!/usr/bin/env Rscript
+
+//     library(Nonpariel)
+//     # Generate a Nonpareil plot with multiple curves
+//     files <- list.files()
+
+//     # TODO: could add option for colors here
+//     # col <- c("orange","darkcyan","firebrick4")
+    
+//     nps <- Nonpareil.set(files, col=col,
+//        plot.opts=list(plot.observed=FALSE, model.lwd=2))
+
+//     # Show the estimated values
+//     print(nps)
+
+//     # Show current coverage (as %)
+//     summary(nps)[,"C"]*100
+
+//     # Extract Nd diversity index
+//     summary(nps)[,"diversity"]
+
+//     # Extract sequencing effort for nearly complete coverage (in Gbp)
+//     summary(nps)[,"LRstar"]/1e9
+
+//     # Predict coverage for a sequencing effort of 10Gbp
+//     sapply(nps$np.curves, predict, 10e9)
+//     """
+// }
+
 
 /*
  * Step 4: Remove host DNA
@@ -287,61 +400,118 @@ process fastqc_post {
 if (params.hostFasta)  {
 
     hostGenomeFile = file(params.hostFasta)
-    hostGenomeStore = hostGenomeFile.getParent()    
-    
-    process bowtie2Index {
-        storeDir hostGenomeStore
-        validExitStatus 0        
-        input:
-        file gf from hostGenomeFile
+    hostGenomeStore = hostGenomeFile.getParent()
+    genomePrefix = hostGenomeFile.getSimpleName()
 
-        output:
-        file "*.bt2" into bowtie2Index
+     process bowtie_Index_kneaddata {
+         tag                    { gf }
+         storeDir               "${hostGenomeStore}/Bowtie2"
+     
+         input:
+         file gf from hostGenomeFile
+     
+         output:
+         file "*.bt2"  into bowtieIdxToFilter
+     
+         script:
+         """
+         bowtie2-build  --quiet  --threads ${task.cpus}  -f ${gf}  ${gf.getSimpleName()} 
+         """
+     }
 
-        script:
-        """
-        bowtie2-build --threads ${task.cpus} ${gf} ${gf.getSimpleName()}
-        """
-    }
-    
     process kneaddata {
         tag "kneaddata-${pair_id}"
-        publishDir "${params.outdir}/Host-Filtered", mode: "link"
-        scratch "/scratch"
-        stageOutMode "rsync"
-        
+        publishDir "${params.outdir}/KneadData", mode: "copy"
+ 
         input:
         set pair_id, file(reads) from trimmedToKneaddata
-        file idx from bowtie2Index
+        file idx from bowtieIdxToFilter
 
         output:
-        set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToMetaphlan,filteredToHumann1,filteredToHumann2
-        file("${pair_id}/*unmatched_{1,2}.fastq.gz")
+        tuple val(pair_id), file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToHumann,filteredToKraken
         file("${pair_id}/*contam_{1,2}.fastq.gz")
         file("${pair_id}/*kneaddata.log")
+        // file("${pair_id}/*unmatched_{1,2}.fastq.gz")
 
+        // output:
+        // //set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToMerge,filteredToAssembly,filteredToKraken,filteredToBwa
+        // set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToMerge,filteredToAssembly,filteredToKraken,filteredToBwa
+        // file("${pair_id}/*fastq.gz")
+        // file("${pair_id}/*kneaddata.log")
+
+        script: 
+        runKneadDataparams = params.KneadDataOpts ? params.KneadDataOpts : ''
         """
-        kneaddata --input ${reads[0]} --input ${reads[1]} \
-            --reference-db ${hostGenomeFile.getSimpleName()} \
-            --threads ${task.cpus} \
-            --output ${pair_id} \
-            --remove-intermediate-output \
-            --bypass-trf \
-            --bypass-trim
+        kneaddata --input ${reads[0]} --input ${reads[1]} \\
+         --reference-db ${genomePrefix} \\
+         --output ${pair_id} \\
+         --bypass-trim \\
+         --bypass-trf \\
+         --decontaminate-pairs lenient \\
+         --threads ${task.cpus} ${runKneadDataparams}
 
-
-        pigz -p ${task.cpus} ${pair_id}//*.fastq
+        pigz -p ${task.cpus} ${pair_id}/*.fastq
         """
-        
     }
+
+    // process bowtie_Index_kneaddata {
+    //     storeDir "${hostGenomeStore}/Bowtie2"
+    //     input:
+    //     file gf from hostGenomeFile
+
+    //     output:
+    //     file "*.bt2" into bowtie2Index
+
+    //     script:
+    //     """
+    //     bowtie2-build  --quiet  --threads ${task.cpus}  -f ${gf}  ${genomePrefix} 
+    //     bowtie2-build --threads ${task.cpus} ${gf} ${gf.getSimpleName()}
+    //     """
+    // }
+    
+    // process kneaddata {
+    //     tag "kneaddata-${pair_id}"
+    //     publishDir "${params.outdir}/Host-Filtered", mode: "copy"
+    //     stageOutMode "rsync"
+        
+    //     input:
+    //     set pair_id, file(reads) from trimmedToKneaddata
+    //     file idx from bowtie2Index
+
+    //     output:
+    //     tuple val(pair_id), file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToHumann,filteredToKraken
+    //     file("${pair_id}/*unmatched_{1,2}.fastq.gz")
+    //     file("${pair_id}/*contam_{1,2}.fastq.gz")
+    //     file("${pair_id}/*kneaddata.log")
+
+    //     script:
+    //     peData = params.singleEnd ? '' : "--input ${reads[1]}" 
+    //     // we skip trf (way too long) and trimming (we use FASTP above)
+    //     """
+    //     kneaddata --input ${reads[0]} ${peData} \
+    //         --reference-db ${hostGenomeFile.getSimpleName()} \
+    //         --threads ${task.cpus} \
+    //         --output ${pair_id} \
+    //         --remove-intermediate-output \
+    //         --bypass-trf \
+    //         --bypass-trim
+
+    //     pigz -p ${task.cpus} ${pair_id}//*.fastq
+    //     """
+    // }
 } else {
     exit 1, "Must set host genome for filtering using hostdb"
-    // TODO: skip this step and set channel appropriately 
 }
+
+
+/*
+ * Step 6: MultiQC
+ */
 
 /*
  * Step 4: VSEARCH FASTQ Merging
  */
+
 
 // TODO: add support
 // if (false)  {
@@ -423,430 +593,174 @@ if (params.hostFasta)  {
 //     // TODO: make empty channels
 // }
 
-
-/*
- * Step 6: MultiQC
- */
-
-/*
- * STEP 2 - MultiQC
- */
-
-// process multiqc {
-//     publishDir "${params.outdir}/MultiQC", mode: 'copy'
-// 
-//     input:
-//     file multiqc_config from ch_multiqc_config
-//     // TODO nf-core: Add in log files from your new processes for MultiQC to find!
-//     
-//     file ("fastqc/*") from fastqc_results.collect().ifEmpty([])
-//     file ("software_versions/*") from software_versions_yaml.collect()
-//     file workflow_summary from create_workflow_summary(summary)
-// 
-//     output:
-//     file "*multiqc_report.html" into multiqc_report
-//     file "*_data"
-//     file "multiqc_plots"
-// 
-//     script:
-//     rtitle = custom_runName ? "--title \"$custom_runName\"" : ''
-//     rfilename = custom_runName ? "--filename " + custom_runName.replaceAll('\\W','_').replaceAll('_+','_') + "_multiqc_report" : ''
-//     // TODO nf-core: Specify which MultiQC modules to use with -m for a faster run time
-//     """
-//     multiqc -f $rtitle $rfilename --config $multiqc_config .
-//     """
-// }
-
-// process runMultiQC {
-//    executor 'slurm'
-//    cpus 1
-//    queue 'normal'
-//    memory '4 GB'
-//    module multiQCMod
-//    publishDir "${params.outdir}/MultiQC", mode: "link"
-// 
-//    input:
-//    file ('RawFASTQC/*') from rawFastqcResults.collect()
-//    file ('Trimmomatic/*') from trimmedFastqLogs.collect()
-//    file ('TrimmedFASTQC/*') from trimmedFastqcResults.collect()
-// 
-//    output:
-//    file '*multiqc_report.html' into multiqc_report
-//    file '*_data' into multiqc_data
-//    file '.command.err' into multiqc_stderr
-// 
-//    """
-//    multiqc . -f -d -m fastqc -m trimmomatic
-//    """
-// }
-
-/*
- * Step 6: Combine Reads - we keep merged reads and unmerged R1
- */
-
-
-process metaphlan {
-    tag "Metaphlan-${pair_id}"
-    label 'process_high'
-    publishDir "${params.outdir}/metaphlan", mode: "link"
-    stageOutMode "rsync"    
+// process metaphlan {
+//     tag "Metaphlan-${pair_id}"
+//     label 'process_high'
+//     publishDir "${params.outdir}/metaphlan", mode: "link"
+//     stageOutMode "rsync"    
     
+//     input:
+//     set val(pair_id), file(freads) from filteredToMetaphlan
+
+//     output:
+//     file("${pair_id}.profile.txt") into metaphlanToJointTaxProfile
+//     file("${pair_id}.bowtie2.bz2")
+
+//     script:
+//     b2db = params.bowtie2db ? "--bowtie2db ${params.bowtie2db}" : ''
+//     """
+//     metaphlan ${freads[0]},${freads[1]} \
+//         --input_type fastq \
+//         --bowtie2out ${pair_id}.bowtie2.bz2 \
+//         --nproc ${task.cpus} \
+//         -o ${pair_id}.profile.txt \
+//         --tmp_dir /scratch ${b2db}
+//     """
+// }
+
+if (params.runKraken && params.Kraken2DB) {
+
+    kraken2DB = file(params.Kraken2DB)
+
+    process kraken2 {
+    tag "kraken2-${pair_id}"
+    publishDir "${params.outdir}/5-Kraken2", mode: "copy"
+
     input:
-    set val(pair_id), file(freads) from filteredToMetaphlan
+    tuple val(pair_id), file(freads) from filteredToKraken
 
     output:
-    file("${pair_id}.profile.txt") into metaphlanToJointTaxProfile
-    file("${pair_id}.bowtie2.bz2")
+    tuple val(pair_id), file("${pair_id}.kraken2.report") to krakenToKrona
+    file(${pair_id}.kraken2)
 
     script:
-    b2db = params.bowtie2db ? "--bowtie2db ${params.bowtie2db}" : ''
     """
-    metaphlan ${freads[0]},${freads[1]} \
-        --input_type fastq \
-        --bowtie2out ${pair_id}.bowtie2.bz2 \
-        --nproc ${task.cpus} \
-        -o ${pair_id}.profile.txt \
-        --tmp_dir /scratch ${b2db}
+        kraken2 \\
+        --db ${kraken2db} \\
+        --threads ${task.cpus} \\
+        --output ${pair_id}.kraken2 \\
+        --paired \\
+        --report ${pair_id}.kraken2.report \\
+        ${freads[0]} ${freads[1]}
     """
+    }
+
 }
 
-process humannJointProfile {
-    tag "humann-jointTaxProfile"
-    storeDir "${params.outdir}/JointProfile"
-    scratch "/scratch"
-    stageOutMode "rsync"    
+if (params.runHumann) {
+    // We have two ways to run HUMANN3; run per sample or run joint profiling.
+    // The authors recommend running per sample, which is a little weird
+    // (joint should be better) For now we run per sample but have the joint
+    // profiling code below commented out; after some testing we can add this
+    // back in
+
+    process humann {
+        tag "humann-${id}"
+        publishDir "${params.outdir}/humann"
+
+        input:
+        set val(id), file(freads) from filteredToHumann
+        
+        output:
+        file("${id}/*") 
+
+        script:
+        //mpd = params.metaphlanDb ? "--metaphlan-options '-–bowtie2db ${params.metaphlanDb}'" : ''
+        """
+        #cat $freads > all.reads.fastq.gz
     
-    input:
-    file("./metaphlan/*") from metaphlanToJointTaxProfile.collect()
+        humann --input ${freads[0]} \
+            --output ${id} \
+            --search-mode ${params.humannMode} \
+            --threads ${task.cpus} ${params.humannOpts} 2> ${id}.humann.runlog
 
-    output:
-    file("max_profiled_metagenome.tsv") into jointProfile1,jointProfile2
+        #rm all.reads.fastq.gz  
+        """
+    }
 
-    """
-    humann_join_tables -i ./metaphlan \
-        -o joined_profiled_metagenome.tsv
+    // Joint profiling code
+    // process humannJointProfile {
+    //     tag "humann-jointTaxProfile"
+    //     storeDir "${params.outdir}/JointProfile"
+    //     scratch "/scratch"
+    //     stageOutMode "rsync"
+        
+    //     input:
+    //     file("./metaphlan/*") from metaphlanToJointTaxProfile.collect()
 
-    humann_reduce_table -i joined_profiled_metagenome.tsv \
-        -o max_profiled_metagenome.tmp.tsv \
-        --function max \
-        --sort-by level
+    //     output:
+    //     file("max_profiled_metagenome.tsv") into jointProfile1,jointProfile2
+
+    //     """
+    //     humann_join_tables -i ./metaphlan \
+    //         -o joined_profiled_metagenome.tsv
+
+    //     humann_reduce_table -i joined_profiled_metagenome.tsv \
+    //         -o max_profiled_metagenome.tmp.tsv \
+    //         --function max \
+    //         --sort-by level
+        
+    //     # short-term fix
+    //     sed -i 's/\$/\t/' max_profiled_metagenome.tmp.tsv 
+    //     echo -e "#mpa_v30_CHOCOPhlAn_201901\\n\$(cat max_profiled_metagenome.tmp.tsv)" > max_profiled_metagenome.tsv
+    //     """
+    // }
+
+    // //     sed -i 's//\\t/’ max_profiled_metagenome.tmp.tsv 
+    // //     echo -e "#mpa_v30_CHOCOPhlAn_201901\\n\$(cat max_profiled_metagenome.tmp.tsv)" > max_profiled_metagenome.tsv
+
+
+    // process humannBootstrap {
+    //     tag "humann-initial-${id}"
+    //     storeDir "${params.outdir}/humann-db"
+    //     scratch "/scratch"
+
+        
+    //     input:
+    //     set val(id), file(freads) from filteredToHumann1.first()
+    //     file(profile) from jointProfile1
+        
+    //     output:
+    //     file("./bootstrap/bootstrap.reads_humann_temp") into humannDb
+
+    //     """
+    //     cat $freads > bootstrap.reads.fastq.gz
+        
+    //     humann --input bootstrap.reads.fastq.gz \
+    //         --output bootstrap \
+    //         --search-mode uniref90 \
+    //         --threads ${task.cpus} \
+    //         --taxonomic-profile max_profiled_metagenome.tsv
+
+    //     rm bootstrap.reads.fastq.gz
+    //     """
+    // }
+
+    // process humann_joint {
+    //     tag "humann-${id}"
+    //     publishDir "${params.outdir}/humann"
+
+    //     input:
+    //     set val(id), file(freads) from filteredToHumann2
+    //     file(profile) from jointProfile2
+    //     file(db) from humannDb
+        
+    //     output:
+    //     file("${id}/*") 
+
+    //     """
+    //     cat $freads > all.reads.fastq.gz
     
-    # short-term fix
-    sed -i 's/\$/\t/' max_profiled_metagenome.tmp.tsv 
-    echo -e "#mpa_v30_CHOCOPhlAn_201901\\n\$(cat max_profiled_metagenome.tmp.tsv)" > max_profiled_metagenome.tsv
-    """
+    //     humann --input all.reads.fastq.gz \
+    //         --output ${id} \
+    //         --search-mode uniref90 \
+    //         --threads ${task.cpus} \
+    //         --nucleotide-database ${db} \
+    //         --bypass-nucleotide-index    
+    //     rm all.reads.fastq.gz  
+    //     """
+    // }
 }
-
-//     sed -i 's//\\t/’ max_profiled_metagenome.tmp.tsv 
-//     echo -e "#mpa_v30_CHOCOPhlAn_201901\\n\$(cat max_profiled_metagenome.tmp.tsv)" > max_profiled_metagenome.tsv
-
-
-process humannBootstrap {
-    tag "humann-initial-${id}"
-    storeDir "${params.outdir}/humann-db"
-    scratch "/scratch"
-
-    
-    input:
-    set val(id), file(freads) from filteredToHumann1.first()
-    file(profile) from jointProfile1
-    
-    output:
-    file("./bootstrap/bootstrap.reads_humann_temp") into humannDb
-
-    """
-    cat $freads > bootstrap.reads.fastq.gz
-    
-    humann --input bootstrap.reads.fastq.gz \
-        --output bootstrap \
-        --search-mode uniref90 \
-        --threads ${task.cpus} \
-        --taxonomic-profile max_profiled_metagenome.tsv
-
-    rm bootstrap.reads.fastq.gz
-    """
-}
-
-process humann {
-    tag "humann-${id}"
-    publishDir "${params.outdir}/humann"
-
-    input:
-    set val(id), file(freads) from filteredToHumann2
-    file(profile) from jointProfile2
-    file(db) from humannDb
-    
-    output:
-    file("${id}/*") 
-
-    """
-    cat $freads > all.reads.fastq.gz
-    
-    humann --input all.reads.fastq.gz \
-        --output ${id} \
-        --search-mode uniref90 \
-        --threads ${task.cpus} \
-        --nucleotide-database ${db} \
-        --bypass-nucleotide-index    
-
-    rm all.reads.fastq.gz        
-    """
-}
-
-// process humann {
-//     cpus 24
-//     memory '72 GB'
-//     module humannMod
-//     publishDir "${params.outdir}/HUMANn"
-// 
-//     input:
-//     set pair_id, file(freads) from filteredReadsToHumann
-// 
-//     output:
-//     file("${pair_id}/*")
-// 
-//     """
-//     ## // PE: need to concatenate into one temp file
-//     ## // humann --input $SAMPLE.fastq --output $OUTPUT_DIR
-//     """
-// }
-
-// if (params.runKraken2) {
-// 
-//     process kraken2 {
-//         executor 'slurm'
-//         cpus 24
-//         queue 'normal'
-//         memory '72 GB'
-//         module krakenMod
-//         publishDir "${params.outdir}/Kraken2", mode: "link"
-// 
-//         input:
-//         set pair_id, file(freads) from filteredReadsToMetaPhlan2
-// 
-//         output:
-//         file("${pair_id}.profile.txt")
-//         file("${pair_id}.bowtie2.bz2")
-//         file("${pair_id}.biom")
-// 
-//         """
-// 
-//         """
-//     }
-// 
-// }
-
-// if (params.runAssembly) {
-//     // TODO: add SE read support, adjust memory in process
-//     if (params.assembler == 'megahit') {
-//     
-//         process megahit {
-//             tag "MEGAHIT-${id}"
-//             label 'process_high'
-//             publishDir "${params.outdir}/MEGAHIT", mode: "link"
-// 
-//             input:
-//             set val(id), file(freads) from trimmedAssembly
-// 
-//             output:
-//             file("${id}/*")
-//             set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
-//     
-//             script:
-//             megahitparams = params.megahit_opts ? params.megahit_opts : ''
-//             """
-//             megahit \\
-//                 -1 ${freads[0]} -2 ${freads[1]} \\
-//                 -t ${task.cpus} \\
-//                 -o ${id} ${megahitparams}
-//             """
-//         }
-//         
-//     } else if (params.assembler == 'metaspades') {
-// 
-//         process metaspades {
-//             tag "metaSPAdes-${id}"
-//             label 'process_high'
-//             publishDir "${params.outdir}/metaSPADES", mode: "link"
-// 
-//             input:
-//             set val(id), file(freads) from trimmedAssembly
-// 
-//             output:
-//             file("${id}/*")
-//             set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
-//     
-//             script:
-//             metaspadesparams = params.metaspades_opts ? params.metaspades_opts : ''
-//             """
-//             metaspades.py -t ${task.cpus} \\
-//                 -1 ${freads[0]} -2 ${freads[1]} \\
-//                 -o ${id} ${metaspadesparams}
-//             """
-//         }
-//         
-//     } else {
-//         // We need to shut this down!
-//         // TODO: die with a message, silent stop is horrid!
-//         assembly2diamond = Channel.empty()
-//         assembly2bwaidx = Channel.empty()
-//         assembly2MetaBAT = Channel.empty()
-//     }
-//     
-//     if (params.diamondDB) {
-//     
-//         diamondDB = file(params.diamondDB)
-//         // note memory usage; DIAMOND typically requires considerable memory esp. 
-//         // for larger assemblies and databases (like nr)
-//         process diamond {
-//             tag "DIAMOND-${id}"
-//             publishDir "${params.outdir}/DIAMOND", mode: "link"
-//         
-//             input:
-//             set val(id), file(contigs) from assembly2diamond
-// 
-//             output:
-//             file("*.daa")
-//             file("*.log")
-//     
-//             script:
-//             """
-//             diamond blastx -p ${task.cpus} \\
-//                  -d ${diamondDB} \\
-//                  -q $contigs \\
-//                  -o ${id}.daa \\
-//                  --outfmt 100 \\
-//                  --tmpdir /dev/shm \\
-//                  --range-culling -F 25 \\
-//                  --top 5 \\
-//                  --evalue 1e-5 \\
-//                  --sensitive \\
-//                  -v 2> "${id}.log"
-//             """
-//         }
-//     }
-//     
-//     if (params.runMetaBAT) {
-//     
-//         process bwa_index {
-//             tag "bwa-index-${id}"
-//             publishDir "${params.outdir}/bwa-index", mode: "link"
-//         
-//             input:
-//             set val(id), file(contigs) from assembly2bwaidx
-// 
-//             output:
-//             file("${id}.*") into bwaindex
-//     
-//             script:
-//             """
-//             bwa index -p $id $contigs
-//             """
-//         }
-//         
-//         process bwa_aln {
-//             tag "bwa-aln-${id}"
-//             
-//             scratch "/scratch"
-//             
-//             input:
-//             set val(id), file(reads) from trimmedbwaAln
-//             file(idx) from bwaindex.collect()
-//             
-//             output:
-//             set val(id), file("${id}.sam") into bwa2samtools
-//     
-//             script:
-//             """
-//             bwa mem -t ${task.cpus} $id $reads > ${id}.sam 
-//             """
-//         }
-// 
-//         process samtools_sort {
-//             tag "samtools-${id}"
-//             publishDir "${params.outdir}/bwa-aln", mode: "link"
-//         
-//             input:
-//             set val(id), file(aln) from bwa2samtools
-// 
-//             output:
-//             set val(id), file("${id}.sorted.bam*") into bwa2MetaBAT2
-//             file("${id}.stats.txt")
-//     
-//             script:
-//             """
-//             samtools sort -o ${id}.sorted.bam -@ ${task.cpus} $aln
-//             samtools index ${id}.sorted.bam
-//             samtools stats ${id}.sorted.bam > ${id}.stats.txt
-//             """
-//         }
-// 
-//         process metabat2 {
-//             tag "metabat2-${id}"
-//             publishDir "${params.outdir}/metabat2", mode: "link"
-//         
-//             input:
-//             set val(id), file(aln) from bwa2MetaBAT2
-//             set val(id2), file(contigs) from assembly2MetaBAT
-// 
-//             output:
-//             set val(id), file("${id}/bin") into bins2checkM
-//             file("${id}.depth.txt")
-//                 
-//             script:
-//             metabatparams = ${params.metabat_opts} ? ${params.metabat_opts} : ""
-//             """
-//             jgi_summarize_bam_contig_depths \\
-//                 --outputDepth ${id}.depth.txt $aln
-//              
-//             metabat2 -i $contigs \\
-//                 -t ${task.cpus} \\
-//                 --unbinned \\
-//                 -a ${id}.depth.txt ${metabatparams} \\
-//                 -o ${id}/bin
-//             """
-//         }
-//         
-//         process checkm {
-//             tag "checkm-${id}"
-//             publishDir "${params.outdir}/checkm", mode: "link"
-//         
-//             input:
-//             set val(id), file(bins) from bins2checkM
-// 
-//             output:
-//             set val(id), file("${id}/CheckM") into checkMResults
-//                 
-//             script:
-//             """
-//             checkm lineage_wf \\
-//                 -t ${task.cpus} -x fa \\
-//                 ${bins} ${id}/CheckM
-//             """
-//         }
-//                 
-//     }
-//     // next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
-// }
-
-/*
- * STEP 3 - Output Description HTML
- */
- 
-// process output_documentation {
-//     publishDir "${params.outdir}/pipeline_info", mode: 'copy'
-// 
-//     input:
-//     file output_docs from ch_output_docs
-// 
-//     output:
-//     file "results_description.html"
-// 
-//     script:
-//     """
-//     markdown_to_html.r $output_docs results_description.html
-//     """
-// }
 
 /*
  * Completion e-mail notification
