@@ -746,8 +746,8 @@ if (params.runBlobtools) {
             input:
             set val(id), file(GENOME) from assembly2Blobtools 
             set val(id), file(DAA) from diamondToBlobtools                    
-            set val(id), file(bam) from bwa2Blobtools
-            set val(id), file(bai) from bwaIdx2Blobtools
+            set val(id), file(bam) from minimap2Blobtools
+            set val(id), file(bai) from minimapIdx2Blobtools
             file PHYLUM  from blobPhylumFile 
             file KINGDOM from blobKingdomFile
             file TAXLIST from blobTaxFile  
