@@ -262,6 +262,23 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
 /*
 * Step 1. Trim Reads
 */
+
+process fastqc_raw {
+      tag "fastqc_raw_${id}"
+      publishDir "${params.outdir}/11-multiqc", mode: 'copy'
+  
+      input:
+      set val(id), file(reads) from read_files_qc
+  
+      output:
+      set val(id), file("*.zip") optional true into RawReadsToMultiQC
+    
+      """
+      fastqc -t ${task.cpus} --noextract ${reads}
+      """      
+}
+
+
  if (!params.skipTrim && params.inputType == 'onp') {
  
      process porechop_ONP {
@@ -301,6 +318,22 @@ if (params.skipTrim && params.inputType == 'onp') {
     
     }
 }
+
+process fastqc_post {
+      tag "fastqc_trimmed_${id}"
+      publishDir "${params.outdir}/11-multiqc", mode: 'copy'
+  
+      input:
+      set val(id), file(reads) from trimmedToQC
+  
+      output:
+      set val(id), file("*.zip") optional true into TrimmedReadsToMultiQC
+    
+      """
+      fastqc -t ${task.cpus} --noextract ${reads}
+      """      
+}
+
 /*
  * Step 2: Remove host DNA
  */
@@ -319,7 +352,7 @@ if (params.minimapRemoveHost && params.host) {
          file gf from genomeFile
  
          output:
-         set id, file("*_sanitized.fastq") into filteredToAssembly,filteredToKraken,filteredToMinimap, filteredToQC
+         set id, file("*_sanitized.fastq") into filteredToAssembly,filteredToKraken,filteredToMinimap,filteredToQC,filteredToMetaPhlan2
          file("*sanitized*")
 
          script: 
@@ -335,7 +368,7 @@ if (params.minimapRemoveHost && params.host) {
 }
 
 
-if (!params.host && !params.minimapRemoveHost) {
+if (!params.host && params.inputType == 'onp') {
 
 // need a fake process to connect the channels
 
@@ -347,14 +380,28 @@ if (!params.host && !params.minimapRemoveHost) {
          set id, file(reads)  from trimmedToFakeSanitize
  
          output:
-         set id, file("*_trimmed.fastq.gz") into filteredToAssembly,filteredToKraken,filteredToMinimap, filteredToQC
+         set id, file("*_trimmed.fastq.gz") into filteredToAssembly,filteredToKraken,filteredToMinimap,filteredToQC,filteredToMetaPhlan2
          
          """           
-         cp ${reads[0]} ${id}_trimmed.fastq.gz  
+         cp ${reads[0]} ${id}_fsanitized.fastq.gz 
          """   
     }
 }
 
+process fastqc_Sanitized {
+      tag "fastqc_Sanitized_${id}"
+      publishDir "${params.outdir}/11-multiqc", mode: 'copy'
+  
+      input:
+      set val(id), file(reads) from filteredToQC
+  
+      output:
+      set val(id), file("*.zip") optional true into SanitizedReadsToMultiQC
+    
+      """
+      fastqc -t ${task.cpus} --noextract ${reads}
+      """      
+}
 
 
 /*
@@ -362,29 +409,29 @@ if (!params.host && !params.minimapRemoveHost) {
  */
 
 
-if (params.runMetaPhlan2) {
+if (params.runMetaPhlan2 && params.inputType == 'onp') {
 
     process metaphlan2 {
         tag "Metaphlan2-${pair_id}"
         label 'process_high'
-        publishDir "${params.outdir}/4-MetaPhlan2", mode: "copy"
+        publishDir "${params.outdir}/3-MetaPhlan2", mode: "copy"
 
         input:
-        set val(pair_id), file(freads) from mergedToMetaPhlan2
+        set val(id), file(freads) from filteredToMetaPhlan2
 
         output:
-        file("${pair_id}/*")
+        file("${id}/*")
 
         script:
         runMetaPhlan2params = params.runMetaPhlan2_opts ? params.runMetaPhlan2_opts : ''
         """
         metaphlan2.py ${runMetaPhlan2params} \\
-            --bowtie2out ${pair_id}.bowtie2.bz2 \\
+            --bowtie2out ${id}.bowtie2.bz2 \\
             --nproc ${task.cpus} \\
             --input_type fastq \\
-            --biom {pair_id}.biom \\
+            --biom {id}.biom \\
             --tmp_dir /scratch \\
-            -o ${pair_id}.profile.txt \\
+            -o ${id}.profile.txt \\
              ${freads}
         """
     }
@@ -395,27 +442,27 @@ if (params.runMetaPhlan2) {
  */
 
 
- if (params.runKraken2 && params.Kraken2DB) {
+ if (params.runKraken2 && params.Kraken2DB && params.inputType == 'onp') {
 
      kraken2DB = file(params.Kraken2DB)
 
      process kraken2_reads {
          tag "kraken2-${id}"
-         publishDir "${params.outdir}/5-Kraken2-Reads", mode: "copy"
+         publishDir "${params.outdir}/4-Kraken2-Reads", mode: "copy"
  
          input:
          set id, file(freads) from filteredToKraken
  
          output:
-         file("${id}.kraken2*")
+         file("${id}*kraken2*")
 
  
          """
          kraken2 \\
 	       --db ${kraken2DB} \\
 	       --threads ${task.cpus} \\
-	       --output ${id}.kraken2 \\
-         --report ${id}.kraken2.report \\
+	       --output ${id}_reads.kraken2 \\
+         --report ${id}_reads.kraken2.report \\
 	       ${freads[0]}
          """
      }
@@ -427,29 +474,34 @@ if (params.runMetaPhlan2) {
  */
 
 
-if (params.runAssembly) {
-    // TODO: add SE read support, adjust memory in process
+if (params.runAssembly && params.inputType == 'onp') {
+
     if (params.assembler == 'megahit') {
     
         process megahit {
             tag "MEGAHIT-${id}"
             label 'process_high'
-            publishDir "${params.outdir}/6-MEGAHIT", mode: "copy"
+            publishDir "${params.outdir}/5-MEGAHIT", mode: "copy"
 
             input:
             set val(id), file(freads) from filteredToAssembly
 
             output:
             file("${id}/*")
-            set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT2,assembly2Blobtools
+            set val(id), file("*assembly.fasta") into assembly2diamond,assembly2minimap,assembly2MetaBAT2,assembly2Blobtools,assemblyToQC,assemblyToKraken
+            set val(id), file("*csv") into assemblyToMultiQC
     
             script:
             megahitparams = params.megahit_opts ? params.megahit_opts : ''
             """
             megahit \\
-                -1 ${freads[0]} -2 ${freads[1]} \\
+                -r ${freads[0]} \\
                 -t ${task.cpus} \\
                 -o ${id} ${megahitparams}
+                
+            cp ${id}/final.contigs.fa {id}_assembly.fasta
+            
+            /home/groups/hpcbio/apps/FAlite/assemblathon_stats.pl -csv {id}_assembly.fasta           
             """
         }
     }  
@@ -459,21 +511,26 @@ if (params.runAssembly) {
         process metaspades {
             tag "metaSPAdes-${id}"
             label 'process_high'
-            publishDir "${params.outdir}/6-metaSPADES", mode: "copy"
+            publishDir "${params.outdir}/5-metaSPADES", mode: "copy"
 
             input:
             set val(id), file(freads) from filteredToAssembly
 
             output:
             file("${id}/*")
-            set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT2
-    
+            set val(id), file("*assembly.fasta") into assembly2diamond,assembly2minimap,assembly2MetaBAT2,assembly2Blobtools,assemblyToQC,assemblyToKraken
+            set val(id), file("*csv") into assemblyToMultiQC
+                
             script:
             metaspadesparams = params.metaspades_opts ? params.metaspades_opts : ''
             """
             metaspades.py -t ${task.cpus} \\
-                -1 ${freads[0]} -2 ${freads[1]} \\
+                --nanopore ${freads[0]}  \\
                 -o ${id} ${metaspadesparams}
+                
+            cp ${id}/scaffolds.fasta {id}_assembly.fasta
+            
+            /home/groups/hpcbio/apps/FAlite/assemblathon_stats.pl -csv {id}_assembly.fasta 
             """
         }
         
@@ -484,26 +541,30 @@ if (params.runAssembly) {
 
         process metaflye_ONP {
             tag "metaFlye-${id}"
-            publishDir "${params.outdir}/6-metaFlye", mode: "copy"
+            publishDir "${params.outdir}/5-metaFlye", mode: "copy"
 
             input:
             set val(id), file(freads) from filteredToAssembly
 
             output:
-            set val(id), file("*assembly.fasta") into assembly2diamond,assembly2minimap,assembly2MetaBAT2,assemblyToQC,assemblyToKraken
+            set val(id), file("*assembly.fasta") into assembly2diamond,assembly2minimap,assembly2MetaBAT2,assembly2Blobtools,assemblyToQC,assemblyToKraken
+            set val(id), file("*csv") into assemblyToMultiQC
             file("*")    
 
             script:
             """
             flye --nano-hq  ${freads[0]} --out-dir ./output --meta --threads ${task.cpus}
+            
             cp output/assembly.fasta {id}_assembly.fasta
+
+            /home/groups/hpcbio/apps/FAlite/assemblathon_stats.pl -csv {id}_assembly.fasta
             """
         }    
     }
 }
 
 /*
- * Step 7: Diamond 
+ * Step 7: Diamond and or Kraken2 on assembly
  */
  
  if (params.runKraken2 && params.Kraken2DB && params.runAssembly) {
@@ -512,7 +573,7 @@ if (params.runAssembly) {
 
      process kraken2_asm {
          tag "kraken2_asm_${id}"
-         publishDir "${params.outdir}/7-Kraken2-Assembly", mode: "copy"
+         publishDir "${params.outdir}/6-Kraken2-Assembly", mode: "copy"
  
          input:
          set id, file(contigs) from assemblyToKraken
@@ -533,11 +594,12 @@ if (params.runAssembly) {
  }
 
  
- if (params.runDiamond && params.diamondDB) {
+ if (params.runDiamond && params.diamondDB && params.inputType == 'onp') {
     
         diamondDB = file(params.diamondDB)
         // note memory usage; DIAMOND typically requires considerable memory esp. 
         // for larger assemblies and databases (like nr)
+        
         process diamond {
             tag "DIAMOND-${id}"
             publishDir "${params.outdir}/7-DIAMOND", mode: "copy"
@@ -557,10 +619,9 @@ if (params.runAssembly) {
                  -o ${id}.daa \\
                  --outfmt 100 \\
                  --tmpdir /dev/shm \\
-                 --range-culling -F 25 \\
+                 --long-reads \\
                  --top 5 \\
                  --evalue 1e-5 \\
-                 --sensitive \\
                  -v 2> "${id}.log"
             """
         }
@@ -613,113 +674,11 @@ if (params.inputType == 'onp' && params.runMetaBAT || params.runBlobtools) {
         }
 }
 
-if (!params.inputType == 'onp' && params.runMetaBAT || params.runBlobtools) {
-
-        process bwa_index {
-            tag "MetaBAT-bwa-index-${id}"
-            publishDir "${params.outdir}/8-bwa-aln", mode: "copy"
-        
-            input:
-            set val(id), file(contigs) from assembly2bwaidx
-
-            output:
-            file("${id}.*") into bwaindex
-    
-            script:
-            """
-            bwa index -p $id $contigs
-            """
-        }
-        
-        process bwa_aln {
-            tag "MetaBAT-bwa-aln-${id}"
-            publishDir "${params.outdir}/8-bwa-aln", mode: "copy"           
-            scratch "/scratch"
-            
-            input:
-            set val(id), file(freads) from filteredToBwa
-            file(bwaidx) from bwaindex.collect()
-            
-            output:
-            set val(id), file("${id}.sam") into bwa2samtools
-    
-            script:
-            """
-            bwa mem -t ${task.cpus} ${bwaidx.baseName[0]} ${freads[0]} ${freads[1]} > ${id}.sam 
-            """
-        }
-
-        process samtools_sort {
-            tag "MetaBAT-samtools-${id}"
-            publishDir "${params.outdir}/8-bwa-aln", mode: "copy"
-        
-            input:
-            set val(id), file(aln) from bwa2samtools
-
-            output:
-            //set val(id), file("${id}.sorted.bam*") into bwa2MetaBAT2
-            set val(id), file("${id}.sorted.bam") into bwa2MetaBAT2,bwa2Blobtools
-            set val(id), file("${id}*.bai")  into bwaIdxMetaBAT2,bwaIdx2Blobtools
-            file("${id}.stats.txt")
-    
-            script:
-            """
-            samtools sort  -@ ${task.cpus} -o ${id}_aln_asm_sorted.bam -@ ${task.cpus} $aln
-            samtools index ${id}_aln_asm_sorted.bam
-            samtools stats ${id}_aln_asm_sorted,bam > ${id}_aln_asm_sorted.samtools.stats 
-            """
-        }
-}
 
 /*
  * Step 9: Taxonomic binning
  */
  
-if (!params.inputType == 'onp' && params.runMetaBAT) {
-
-        process metabat2_checkM {
-            tag "MetaBAT_checkM-${id}"
-            publishDir "${params.outdir}/9-MetaBAT-checkM", mode: "copy"
-        
-            input:
-            set val(id), file(aln) from bwa2MetaBAT2
-            set val(id2), file(contigs) from assembly2MetaBAT2
-
-            output:
-            file("*")
-                
-            script:
-            metabat2params = params.metabat2_opts ? params.metabat2_opts : ''
-            """
-            echo step one calculate depth
-            
-            jgi_summarize_bam_contig_depths \\
-                --outputDepth ${id}.depth.txt $aln
-
-            echo step two calculate bins with metabat2
-
-            mkdir  ${id}_bins
-                     
-            metabat2 -i $contigs \\
-                -t ${task.cpus} \\
-                --unbinned \\
-                -a ${id}.depth.txt \\
-                -o ./${id}_bins/
-
-            echo step three run checkm
-            
-            checkm lineage_wf \\
-                -t ${task.cpus} \\
-                -x fa \\
-                ./${id}_bins/ ./${id}_CheckM > ${id}_CheckM.log
-
-            """
-        }
-                
-}
-
-            set val(id), file("${id}_sorted.bam") into minimap2MetaBAT2,bwa2Blobtools
-            set val(id), file("${id}*.bai")  into minimapIdx2MetaBAT2,bwaIdx2Blobtools
             
 if (params.inputType == 'onp' && params.runMetaBAT) {
 
@@ -750,14 +709,24 @@ if (params.inputType == 'onp' && params.runMetaBAT) {
                 -t ${task.cpus} \\
                 --unbinned ${metabat2params}  \\
                 -a ${id}.jgi_depth.txt \\
-                -o ./${id}_bins/
+                -o ./${id}_Metabat2_bins/
 
             echo step three run checkm
             
             checkm lineage_wf \\
                 -t ${task.cpus} \\
                 -x fa \\
-                ./${id}_bins/ ./${id}_CheckM > ${id}_CheckM.log
+                ./${id}_Metabat2_bins/ ./${id}_CheckM > ${id}_CheckM.log
+
+            echo step four generate checkm plots
+            
+            checkm nx_plot  -x fa ./${id}_Metabat2_bins/ ./${id}_CheckM/nx_plots/
+            
+            checkm len_hist -x fa ./${id}_Metabat2_bins/ ./${id}_CheckM/lenHist_plots/
+            
+            checkm qa -t 4 -o 2 --tab_table -f ./${id}_CheckM/CheckM_qa_report.tsv ./${id}_CheckM/lineage.ms ./${id}_CheckM
+            
+            checkm marker_plot -x fa ./${id}_CheckM ./${id}_Metabat2_bins/ ./${id}_CheckM/marker_plots/
 
             """
         }
@@ -818,24 +787,21 @@ if (params.runBlobtools) {
  * Step x: MultiQC
  */
 
-process multiqc_ReadPrep {
-    publishDir "${params.outdir}/multiqc", mode: 'copy'
+process multiqc_summary {
+    publishDir "${params.outdir}/11-multiqc", mode: 'copy'
 
     input:
-    file ('Raw/*') from read_files_qc.collect()
-    file ('Trimmed/*') from trimmedToQC.collect()
-    file('SanitizedMerged/*') from filteredToQC.collect()
-    file('assembly/*') from assemblyToQC.collect()
-    file('alnReads2Asm/*') from alnReads2AsmToQC.collect()
+    file ('Raw/*')            from RawReadsToMultiQC.collect()
+    file ('Trimmed/*')        from TrimmedReadsToMultiQC.collect()
+    file('SanitizedMerged/*') from SanitizedReadsToMultiQC.collect()
+    file('assembly/*')        from assemblyToMultiQC.collect()
+    file('alnReads2Asm/*')    from alnReads2AsmToQC.collect()
 
     output:
     file "*"
 
     script:    
     """
-    seqkit stat -j ${task.cpus} *fastq.gz -T > read_fate.tsv
-    seqkit stat -j ${task.cpus} *fasta -T > assembly_stats.tsv
-    fastqc -t ${task.cpus} --noextract *fastq.gz
     multiqc . -f -d
     """
 }
