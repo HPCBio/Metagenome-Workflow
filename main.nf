@@ -703,7 +703,7 @@ if (params.inputType == 'onp' && params.runMetaBAT) {
 
             echo step two calculate bins with metabat2
 
-            mkdir  ${id}_bins
+            mkdir  ./${id}_Metabat2_bins/
                      
             metabat2 -i $contigs \\
                 -t ${task.cpus} \\
@@ -719,14 +719,14 @@ if (params.inputType == 'onp' && params.runMetaBAT) {
                 ./${id}_Metabat2_bins/ ./${id}_CheckM > ${id}_CheckM.log
 
             echo step four generate checkm plots
+ 
+            checkm qa -t 4 -o 2 --tab_table -f ./${id}_CheckM/CheckM_qa_report.tsv ./${id}_CheckM/lineage.ms ./${id}_CheckM           
+ 
+            checkm nx_plot  -x fa ./${id}_Metabat2_bins/ ./${id}_CheckM_nx_plots/
             
-            checkm nx_plot  -x fa ./${id}_Metabat2_bins/ ./${id}_CheckM/nx_plots/
-            
-            checkm len_hist -x fa ./${id}_Metabat2_bins/ ./${id}_CheckM/lenHist_plots/
-            
-            checkm qa -t 4 -o 2 --tab_table -f ./${id}_CheckM/CheckM_qa_report.tsv ./${id}_CheckM/lineage.ms ./${id}_CheckM
-            
-            checkm marker_plot -x fa ./${id}_CheckM ./${id}_Metabat2_bins/ ./${id}_CheckM/marker_plots/
+            checkm len_hist -x fa ./${id}_Metabat2_bins/ ./${id}_CheckM_lenHist_plots/
+                   
+            checkm marker_plot -x fa ./${id}_CheckM ./${id}_Metabat2_bins/ ./${id}_CheckM_marker_plots/
 
             """
         }
