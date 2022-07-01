@@ -133,26 +133,12 @@ ch_output_docs = file("$baseDir/docs/output.md", checkIfExists: true)
 /*
  * Create a channel for input read files
  */
-if (params.readPaths) {
-    if (params.singleEnd) {
-        Channel
-            .from(params.readPaths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true) ] ] }
-            .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-            .into { read_files_trimming,read_files_qc }
-    } else {
-        Channel
-            .from(params.readPaths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true), file(row[1][1], checkIfExists: true) ] ] }
-            .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-            .into { read_files_trimming,read_files_qc }
-    }
-} else {
-    Channel
-        .fromFilePairs( params.reads, size: params.singleEnd ? 1 : 2 )
-        .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-        .into { read_files_trimming,read_files_qc }
-}
+
+Channel
+       .fromFilePairs( params.reads, size: params.singleEnd ? 1 : 2 )
+       .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}" }
+       .into { read_files_qc; read_files_trimming }
+
 
 // take care of persistent files
 
@@ -361,7 +347,7 @@ if (params.minimapRemoveHost && params.host) {
          minimap2 ${miniparams} ${gf} ${reads[0]} | samtools view -b - > ${id}_aln.bam         
          samtools sort -@ ${task.cpus} -o ${id}_aln_sorted.bam  ${id}_aln.bam 
          samtools view -b -f 4 ${id}_aln_sorted.bam > ${id}_sanitized.bam
-         samtools fastq -@ ${task.cpus} ${id}_sanitized.bam -n > ${id}_sanitized.fastq.gz
+         samtools fastq -@ ${task.cpus} ${id}_sanitized.bam -n > ${id}_sanitized.fastq
 
          """
     }
@@ -412,7 +398,7 @@ process fastqc_Sanitized {
 if (params.runMetaPhlan2 && params.inputType == 'onp') {
 
     process metaphlan2 {
-        tag "Metaphlan2-${pair_id}"
+        tag "Metaphlan2-${id}"
         label 'process_high'
         publishDir "${params.outdir}/3-MetaPhlan2", mode: "copy"
 
@@ -482,7 +468,9 @@ if (params.runAssembly && params.inputType == 'onp') {
             tag "MEGAHIT-${id}"
             label 'process_high'
             publishDir "${params.outdir}/5-MEGAHIT", mode: "copy"
-
+            scratch     '/scratch'
+            stageOutMode  'copy'
+         
             input:
             set val(id), file(freads) from filteredToAssembly
 
@@ -499,9 +487,9 @@ if (params.runAssembly && params.inputType == 'onp') {
                 -t ${task.cpus} \\
                 -o ${id} ${megahitparams}
                 
-            cp ${id}/final.contigs.fa {id}_assembly.fasta
+            cp ${id}/final.contigs.fa ${id}_assembly.fasta
             
-            /home/groups/hpcbio/apps/FAlite/assemblathon_stats.pl -csv {id}_assembly.fasta           
+            /home/groups/hpcbio/apps/FAlite/assemblathon_stats.pl -csv ${id}_assembly.fasta           
             """
         }
     }  
@@ -512,7 +500,9 @@ if (params.runAssembly && params.inputType == 'onp') {
             tag "metaSPAdes-${id}"
             label 'process_high'
             publishDir "${params.outdir}/5-metaSPADES", mode: "copy"
-
+            scratch     '/scratch'
+            stageOutMode  'copy'
+         
             input:
             set val(id), file(freads) from filteredToAssembly
 
@@ -528,9 +518,9 @@ if (params.runAssembly && params.inputType == 'onp') {
                 --nanopore ${freads[0]}  \\
                 -o ${id} ${metaspadesparams}
                 
-            cp ${id}/scaffolds.fasta {id}_assembly.fasta
+            cp ${id}/scaffolds.fasta ${id}_assembly.fasta
             
-            /home/groups/hpcbio/apps/FAlite/assemblathon_stats.pl -csv {id}_assembly.fasta 
+            /home/groups/hpcbio/apps/FAlite/assemblathon_stats.pl -csv ${id}_assembly.fasta 
             """
         }
         
@@ -542,7 +532,9 @@ if (params.runAssembly && params.inputType == 'onp') {
         process metaflye_ONP {
             tag "metaFlye-${id}"
             publishDir "${params.outdir}/5-metaFlye", mode: "copy"
-
+            scratch     '/scratch'
+            stageOutMode  'copy'
+    
             input:
             set val(id), file(freads) from filteredToAssembly
 
@@ -555,9 +547,9 @@ if (params.runAssembly && params.inputType == 'onp') {
             """
             flye --nano-hq  ${freads[0]} --out-dir ./output --meta --threads ${task.cpus}
             
-            cp output/assembly.fasta {id}_assembly.fasta
+            cp output/assembly.fasta ${id}_assembly.fasta
 
-            /home/groups/hpcbio/apps/FAlite/assemblathon_stats.pl -csv {id}_assembly.fasta
+            /home/groups/hpcbio/apps/FAlite/assemblathon_stats.pl -csv ${id}_assembly.fasta
             """
         }    
     }
@@ -574,7 +566,9 @@ if (params.runAssembly && params.inputType == 'onp') {
      process kraken2_asm {
          tag "kraken2_asm_${id}"
          publishDir "${params.outdir}/6-Kraken2-Assembly", mode: "copy"
- 
+         scratch     '/scratch'
+         stageOutMode  'copy'
+             
          input:
          set id, file(contigs) from assemblyToKraken
  
@@ -603,7 +597,9 @@ if (params.runAssembly && params.inputType == 'onp') {
         process diamond {
             tag "DIAMOND-${id}"
             publishDir "${params.outdir}/7-DIAMOND", mode: "copy"
-        
+            scratch     '/scratch'
+            stageOutMode  'copy'
+                 
             input:
             set val(id), file(contigs) from assembly2diamond
 
@@ -656,12 +652,12 @@ if (params.inputType == 'onp' && params.runMetaBAT || params.runBlobtools) {
         
             input:
             set val(id), file(contigs) from  assembly2minimap         
-            set val(id2), file(freads) from filteredToMinimap
+            set val(id), file(freads) from filteredToMinimap
 
             output:            
-            set val(id), file("${id}_sorted.bam") into minimap2MetaBAT2,minimap2Blobtools
+            set val(id), file("${id}*_sorted.bam") into minimap2MetaBAT2,minimap2Blobtools
             set val(id), file("${id}*.bai")  into minimapIdx2MetaBAT2,minimapIdx2Blobtools
-            file("${id}.stats") into alnReads2AsmToQC 
+            file("${id}*.stats") into alnReads2AsmToQC 
             file("*")      
       
             """
