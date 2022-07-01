@@ -722,7 +722,7 @@ if (params.inputType == 'onp' && params.runMetaBAT) {
             
             checkm len_hist -x fa ./${id}_Metabat2_bins/ ./${id}_CheckM_lenHist_plots/
                    
-            checkm marker_plot -x fa ./${id}_CheckM ./${id}_Metabat2_bins/ ./${id}_CheckM_marker_plots/
+            #checkm marker_plot -x fa ./${id}_CheckM ./${id}_Metabat2_bins/ ./${id}_CheckM_marker_plots/
 
             """
         }
