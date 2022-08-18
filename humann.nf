@@ -94,26 +94,24 @@ ch_output_docs = file("$baseDir/docs/output.md", checkIfExists: true)
 /*
  * Create a channel for input read files
  */
-// if (params.readPaths) {
-//     if (params.singleEnd) {
-//         Channel
-//             .from(params.readPaths)
-//             .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true) ] ] }
-//             .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-//             .into { read_files_fastqc; read_files_trimming }
-//     } else {
-//         Channel
-//             .from(params.readPaths)
-//             .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true), file(row[1][1], checkIfExists: true) ] ] }
-//             .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-//             .into { read_files_fastqc; read_files_trimming }
-//     }
-// } else {
+if (params.reads) {
+    Channel
+      .fromFilePairs( params.reads, size: params.singleEnd ? 1 : 2 )
+      .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
+      .into { read_files_fastqc; read_files_trimming }
+    // Channel
+    //     .from(params.reads)
+    //     .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true) ] ] }
+    //     .ifEmpty { exit 1, "params.reads was empty - no input files supplied" }
+    //     .into { read_files_fastqc; read_files_trimming }
+    // Channel
+    //     .from(params.reads)
+    //     .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true), file(row[1][1], checkIfExists: true) ] ] }
+    //     .ifEmpty { exit 1, "params.reads was empty - no input files supplied" }
+    //     .into { read_files_fastqc; read_files_trimming }
+}
 
-Channel
-    .fromFilePairs( "./reads/*.R{1,2}.fastq.gz", size: params.singleEnd ? 1 : 2 )
-    .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-    .into { read_files_fastqc; read_files_trimming }
+
 
 // Header log info
 log.info nfcoreHeader()
@@ -192,30 +190,30 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
 // }
 
 
-/*
- * STEP 1 - FastQC
- */
-process fastqc {
-    tag "FASTQC-${id}"
-    label 'process_low'
-    publishDir "${params.outdir}/fastqc", mode: 'copy',
-        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
+// /*
+//  * STEP 1 - FastQC
+//  */
+// process fastqc {
+//     tag "FASTQC-${id}"
+//     label 'process_low'
+//     publishDir "${params.outdir}/fastqc", mode: 'copy',
+//         saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
 
-    input:
-    set val(id), file(reads) from read_files_fastqc
+//     input:
+//     set val(id), file(reads) from read_files_fastqc
 
-    output:
-    file "*_fastqc.{zip,html}" into fastqc_results
+//     output:
+//     file "*_fastqc.{zip,html}" into fastqc_results
 
-    script:
-    """
-    fastqc --quiet --threads $task.cpus $reads
-    """
-}
+//     script:
+//     """
+//     fastqc --quiet --threads $task.cpus $reads
+//     """
+// }
 
-/*
-* Step 2. FASTP
-*/
+// /*
+// * Step 2. FASTP
+// */
 
 process fastp {
     tag "fastp-${id}"
@@ -257,27 +255,27 @@ process fastp {
     }
 }
 
-/*
-* Step 3. FASTQC on trimmed files
-*/
+// /*
+// * Step 3. FASTQC on trimmed files
+// */
 
-process fastqc_post {
-    tag "FASTQC-post-${name}"
-    label 'process_low'
-    publishDir "${params.outdir}/fastqc-post", mode: 'copy',
-        saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
+// process fastqc_post {
+//     tag "FASTQC-post-${name}"
+//     label 'process_low'
+//     publishDir "${params.outdir}/fastqc-post", mode: 'copy',
+//         saveAs: { filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename" }
 
-    input:
-    set val(name), file(reads) from trimmedToFASTQC
+//     input:
+//     set val(name), file(reads) from trimmedToFASTQC
 
-    output:
-    file "*_fastqc.{zip,html}" into fastqc_post_results
+//     output:
+//     file "*_fastqc.{zip,html}" into fastqc_post_results
 
-    script:
-    """
-    fastqc --quiet --threads ${task.cpus} $reads
-    """
-}
+//     script:
+//     """
+//     fastqc --quiet --threads ${task.cpus} $reads
+//     """
+// }
 
 /*
  * Step 4: Remove host DNA
@@ -291,7 +289,6 @@ if (params.hostFasta)  {
     
     process bowtie2Index {
         storeDir hostGenomeStore
-        validExitStatus 0        
         input:
         file gf from hostGenomeFile
 
@@ -315,7 +312,7 @@ if (params.hostFasta)  {
         file idx from bowtie2Index
 
         output:
-        set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToMetaphlan,filteredToHumann1,filteredToHumann2
+        set pair_id, file("${pair_id}/*paired_{1,2}.fastq.gz") into filteredToMetaphlan,filteredToHumann
         file("${pair_id}/*unmatched_{1,2}.fastq.gz")
         file("${pair_id}/*contam_{1,2}.fastq.gz")
         file("${pair_id}/*kneaddata.log")
@@ -480,371 +477,147 @@ if (params.hostFasta)  {
 //    """
 // }
 
-/*
- * Step 6: Combine Reads - we keep merged reads and unmerged R1
- */
+// if we are running the standard humann workflow, run per sample
 
+if (params.runHumann) {
+    // We have two ways to run HUMANN3; run per sample or run joint profiling.
+    // The authors recommend running per sample, which is a little weird
+    // (joint should be better) For now we run per sample but have the joint
+    // profiling code below commented out; after some testing we can add this
+    // back in
 
-process metaphlan {
-    tag "Metaphlan-${pair_id}"
-    label 'process_high'
-    publishDir "${params.outdir}/metaphlan", mode: "link"
-    stageOutMode "rsync"    
     
-    input:
-    set val(pair_id), file(freads) from filteredToMetaphlan
+    
+    // process humann {
+    //     tag "humann-${id}"
+    //     publishDir "${params.outdir}/humann"
 
-    output:
-    file("${pair_id}.profile.txt") into metaphlanToJointTaxProfile
-    file("${pair_id}.bowtie2.bz2")
+    //     input:
+    //     set val(id), file(freads) from filteredToHumann
+        
+    //     output:
+    //     file("${id}/*") 
 
-    script:
-    b2db = params.bowtie2db ? "--bowtie2db ${params.bowtie2db}" : ''
-    """
-    metaphlan ${freads[0]},${freads[1]} \
-        --input_type fastq \
-        --bowtie2out ${pair_id}.bowtie2.bz2 \
-        --nproc ${task.cpus} \
-        -o ${pair_id}.profile.txt \
-        --tmp_dir /scratch ${b2db}
-    """
+    //     script:
+    //     //mpd = params.metaphlanDb ? "--metaphlan-options '-–bowtie2db ${params.metaphlanDb}'" : ''
+    //     """
+    //     #cat $freads > all.reads.fastq.gz
+    
+    //     humann --input ${freads[0]} \
+    //         --output ${id} \
+    //         --search-mode ${params.humannMode} \
+    //         --threads ${task.cpus} ${params.humannOpts} 2> ${id}.humann.runlog
+    //     #rm all.reads.fastq.gz  
+    //     """
+    // }
 }
 
-process humannJointProfile {
-    tag "humann-jointTaxProfile"
-    storeDir "${params.outdir}/JointProfile"
-    scratch "/scratch"
-    stageOutMode "rsync"    
+// process metaphlan {
+//     tag "Metaphlan-${pair_id}"
+//     label 'process_high'
+//     publishDir "${params.outdir}/metaphlan", mode: "link"
+//     stageOutMode "rsync"    
     
-    input:
-    file("./metaphlan/*") from metaphlanToJointTaxProfile.collect()
+//     input:
+//     set val(pair_id), file(freads) from filteredToMetaphlan
 
-    output:
-    file("max_profiled_metagenome.tsv") into jointProfile1,jointProfile2
+//     output:
+//     file("${pair_id}.profile.txt") into metaphlanToJointTaxProfile
+//     file("${pair_id}.bowtie2.bz2")
 
-    """
-    humann_join_tables -i ./metaphlan \
-        -o joined_profiled_metagenome.tsv
+//     script:
+//     b2db = params.bowtie2db ? "--bowtie2db ${params.bowtie2db}" : ''
+//     """
+//     metaphlan ${freads[0]},${freads[1]} \
+//         --input_type fastq \
+//         --bowtie2out ${pair_id}.bowtie2.bz2 \
+//         --nproc ${task.cpus} \
+//         -o ${pair_id}.profile.txt \
+//         --tmp_dir /scratch ${b2db}
+//     """
+// }
 
-    humann_reduce_table -i joined_profiled_metagenome.tsv \
-        -o max_profiled_metagenome.tmp.tsv \
-        --function max \
-        --sort-by level
+// process humannJointProfile {
+//     tag "humann-jointTaxProfile"
+//     storeDir "${params.outdir}/JointProfile"
+//     scratch "/scratch"
+//     stageOutMode "rsync"    
     
-    # short-term fix
-    sed -i 's/\$/\t/' max_profiled_metagenome.tmp.tsv 
-    echo -e "#mpa_v30_CHOCOPhlAn_201901\\n\$(cat max_profiled_metagenome.tmp.tsv)" > max_profiled_metagenome.tsv
-    """
-}
+//     input:
+//     file("./metaphlan/*") from metaphlanToJointTaxProfile.collect()
 
-//     sed -i 's//\\t/’ max_profiled_metagenome.tmp.tsv 
+//     output:
+//     file("max_profiled_metagenome.tsv") into jointProfile1,jointProfile2
+//     file("max_profiled_metagenome.tmp.tsv")
+//     file("joined_profiled_metagenome.tsv")
+
+//     """
+//     humann_join_tables -i ./metaphlan \
+//         -o joined_profiled_metagenome.tsv
+
+//     humann_reduce_table -i joined_profiled_metagenome.tsv \
+//         -o max_profiled_metagenome.tmp.tsv \
+//         --function max \
+//         --sort-by level
+    
+//     # short-term fix
+//     sed -i 's/\$/\t/' max_profiled_metagenome.tmp.tsv 
 //     echo -e "#mpa_v30_CHOCOPhlAn_201901\\n\$(cat max_profiled_metagenome.tmp.tsv)" > max_profiled_metagenome.tsv
+//     """
+// }
 
+// //     sed -i 's//\\t/’ max_profiled_metagenome.tmp.tsv 
+// //     echo -e "#mpa_v30_CHOCOPhlAn_201901\\n\$(cat max_profiled_metagenome.tmp.tsv)" > max_profiled_metagenome.tsv
 
-process humannBootstrap {
-    tag "humann-initial-${id}"
-    storeDir "${params.outdir}/humann-db"
-    scratch "/scratch"
+// process humannBootstrap {
+//     tag "humann-initial-${id}"
+//     storeDir "${params.outdir}/humann-db"
+//     scratch "/scratch"
 
     
-    input:
-    set val(id), file(freads) from filteredToHumann1.first()
-    file(profile) from jointProfile1
+//     input:
+//     set val(id), file(freads) from filteredToHumann1.first()
+//     file(profile) from jointProfile1
     
-    output:
-    file("./bootstrap/bootstrap.reads_humann_temp") into humannDb
+//     output:
+//     file("./bootstrap/bootstrap.reads_humann_temp") into humannDb
 
-    """
-    cat $freads > bootstrap.reads.fastq.gz
+//     """
+//     cat $freads > bootstrap.reads.fastq.gz
     
-    humann --input bootstrap.reads.fastq.gz \
-        --output bootstrap \
-        --search-mode uniref50 \
-        --threads ${task.cpus} \
-        --taxonomic-profile max_profiled_metagenome.tsv
+//     humann --input bootstrap.reads.fastq.gz \
+//         --output bootstrap \
+//         --search-mode uniref50 \
+//         --threads ${task.cpus} \
+//         --taxonomic-profile max_profiled_metagenome.tsv
 
-    rm bootstrap.reads.fastq.gz
-    """
-}
-
-process humann {
-    tag "humann-${id}"
-    publishDir "${params.outdir}/humann"
-
-    input:
-    set val(id), file(freads) from filteredToHumann2
-    file(profile) from jointProfile2
-    file(db) from humannDb
-    
-    output:
-    file("${id}/*") 
-
-    """
-    cat $freads > all.reads.fastq.gz
-    
-    humann --input all.reads.fastq.gz \
-        --output ${id} \
-        --search-mode uniref50 \
-        --threads ${task.cpus} \
-        --nucleotide-database ${db} \
-        --bypass-nucleotide-index    
-
-    rm all.reads.fastq.gz        
-    """
-}
+//     rm bootstrap.reads.fastq.gz
+//     """
+// }
 
 // process humann {
-//     cpus 24
-//     memory '72 GB'
-//     module humannMod
-//     publishDir "${params.outdir}/HUMANn"
-// 
+//     tag "humann-${id}"
+//     publishDir "${params.outdir}/humann"
+
 //     input:
-//     set pair_id, file(freads) from filteredReadsToHumann
-// 
+//     set val(id), file(freads) from filteredToHumann1
+//     file(profile) from jointProfile2
+//     file(db) from humannDb
+    
 //     output:
-//     file("${pair_id}/*")
-// 
-//     """
-//     ## // PE: need to concatenate into one temp file
-//     ## // humann --input $SAMPLE.fastq --output $OUTPUT_DIR
-//     """
-// }
+//     file("${id}/*") 
 
-// if (params.runKraken2) {
-// 
-//     process kraken2 {
-//         executor 'slurm'
-//         cpus 24
-//         queue 'normal'
-//         memory '72 GB'
-//         module krakenMod
-//         publishDir "${params.outdir}/Kraken2", mode: "link"
-// 
-//         input:
-//         set pair_id, file(freads) from filteredReadsToMetaPhlan2
-// 
-//         output:
-//         file("${pair_id}.profile.txt")
-//         file("${pair_id}.bowtie2.bz2")
-//         file("${pair_id}.biom")
-// 
-//         """
-// 
-//         """
-//     }
-// 
-// }
-
-// if (params.runAssembly) {
-//     // TODO: add SE read support, adjust memory in process
-//     if (params.assembler == 'megahit') {
-//     
-//         process megahit {
-//             tag "MEGAHIT-${id}"
-//             label 'process_high'
-//             publishDir "${params.outdir}/MEGAHIT", mode: "link"
-// 
-//             input:
-//             set val(id), file(freads) from trimmedAssembly
-// 
-//             output:
-//             file("${id}/*")
-//             set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
-//     
-//             script:
-//             megahitparams = params.megahit_opts ? params.megahit_opts : ''
-//             """
-//             megahit \\
-//                 -1 ${freads[0]} -2 ${freads[1]} \\
-//                 -t ${task.cpus} \\
-//                 -o ${id} ${megahitparams}
-//             """
-//         }
-//         
-//     } else if (params.assembler == 'metaspades') {
-// 
-//         process metaspades {
-//             tag "metaSPAdes-${id}"
-//             label 'process_high'
-//             publishDir "${params.outdir}/metaSPADES", mode: "link"
-// 
-//             input:
-//             set val(id), file(freads) from trimmedAssembly
-// 
-//             output:
-//             file("${id}/*")
-//             set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT
-//     
-//             script:
-//             metaspadesparams = params.metaspades_opts ? params.metaspades_opts : ''
-//             """
-//             metaspades.py -t ${task.cpus} \\
-//                 -1 ${freads[0]} -2 ${freads[1]} \\
-//                 -o ${id} ${metaspadesparams}
-//             """
-//         }
-//         
-//     } else {
-//         // We need to shut this down!
-//         // TODO: die with a message, silent stop is horrid!
-//         assembly2diamond = Channel.empty()
-//         assembly2bwaidx = Channel.empty()
-//         assembly2MetaBAT = Channel.empty()
-//     }
-//     
-//     if (params.diamondDB) {
-//     
-//         diamondDB = file(params.diamondDB)
-//         // note memory usage; DIAMOND typically requires considerable memory esp. 
-//         // for larger assemblies and databases (like nr)
-//         process diamond {
-//             tag "DIAMOND-${id}"
-//             publishDir "${params.outdir}/DIAMOND", mode: "link"
-//         
-//             input:
-//             set val(id), file(contigs) from assembly2diamond
-// 
-//             output:
-//             file("*.daa")
-//             file("*.log")
-//     
-//             script:
-//             """
-//             diamond blastx -p ${task.cpus} \\
-//                  -d ${diamondDB} \\
-//                  -q $contigs \\
-//                  -o ${id}.daa \\
-//                  --outfmt 100 \\
-//                  --tmpdir /dev/shm \\
-//                  --range-culling -F 25 \\
-//                  --top 5 \\
-//                  --evalue 1e-5 \\
-//                  --sensitive \\
-//                  -v 2> "${id}.log"
-//             """
-//         }
-//     }
-//     
-//     if (params.runMetaBAT) {
-//     
-//         process bwa_index {
-//             tag "bwa-index-${id}"
-//             publishDir "${params.outdir}/bwa-index", mode: "link"
-//         
-//             input:
-//             set val(id), file(contigs) from assembly2bwaidx
-// 
-//             output:
-//             file("${id}.*") into bwaindex
-//     
-//             script:
-//             """
-//             bwa index -p $id $contigs
-//             """
-//         }
-//         
-//         process bwa_aln {
-//             tag "bwa-aln-${id}"
-//             
-//             scratch "/scratch"
-//             
-//             input:
-//             set val(id), file(reads) from trimmedbwaAln
-//             file(idx) from bwaindex.collect()
-//             
-//             output:
-//             set val(id), file("${id}.sam") into bwa2samtools
-//     
-//             script:
-//             """
-//             bwa mem -t ${task.cpus} $id $reads > ${id}.sam 
-//             """
-//         }
-// 
-//         process samtools_sort {
-//             tag "samtools-${id}"
-//             publishDir "${params.outdir}/bwa-aln", mode: "link"
-//         
-//             input:
-//             set val(id), file(aln) from bwa2samtools
-// 
-//             output:
-//             set val(id), file("${id}.sorted.bam*") into bwa2MetaBAT2
-//             file("${id}.stats.txt")
-//     
-//             script:
-//             """
-//             samtools sort -o ${id}.sorted.bam -@ ${task.cpus} $aln
-//             samtools index ${id}.sorted.bam
-//             samtools stats ${id}.sorted.bam > ${id}.stats.txt
-//             """
-//         }
-// 
-//         process metabat2 {
-//             tag "metabat2-${id}"
-//             publishDir "${params.outdir}/metabat2", mode: "link"
-//         
-//             input:
-//             set val(id), file(aln) from bwa2MetaBAT2
-//             set val(id2), file(contigs) from assembly2MetaBAT
-// 
-//             output:
-//             set val(id), file("${id}/bin") into bins2checkM
-//             file("${id}.depth.txt")
-//                 
-//             script:
-//             metabatparams = ${params.metabat_opts} ? ${params.metabat_opts} : ""
-//             """
-//             jgi_summarize_bam_contig_depths \\
-//                 --outputDepth ${id}.depth.txt $aln
-//              
-//             metabat2 -i $contigs \\
-//                 -t ${task.cpus} \\
-//                 --unbinned \\
-//                 -a ${id}.depth.txt ${metabatparams} \\
-//                 -o ${id}/bin
-//             """
-//         }
-//         
-//         process checkm {
-//             tag "checkm-${id}"
-//             publishDir "${params.outdir}/checkm", mode: "link"
-//         
-//             input:
-//             set val(id), file(bins) from bins2checkM
-// 
-//             output:
-//             set val(id), file("${id}/CheckM") into checkMResults
-//                 
-//             script:
-//             """
-//             checkm lineage_wf \\
-//                 -t ${task.cpus} -x fa \\
-//                 ${bins} ${id}/CheckM
-//             """
-//         }
-//                 
-//     }
-//     // next steps: index assembly, align reads to assembly, bin reads, run CheckM on bins, annotate assembly
-// }
-
-/*
- * STEP 3 - Output Description HTML
- */
- 
-// process output_documentation {
-//     publishDir "${params.outdir}/pipeline_info", mode: 'copy'
-// 
-//     input:
-//     file output_docs from ch_output_docs
-// 
-//     output:
-//     file "results_description.html"
-// 
-//     script:
 //     """
-//     markdown_to_html.r $output_docs results_description.html
+//     cat $freads > all.reads.fastq.gz
+    
+//     humann --input all.reads.fastq.gz \
+//         --output ${id} \
+//         --search-mode uniref50 \
+//         --threads ${task.cpus} \
+//         --nucleotide-database ${db} \
+//         --bypass-nucleotide-index    
+
+//     rm all.reads.fastq.gz        
 //     """
 // }
 
