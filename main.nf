@@ -143,11 +143,11 @@ if (params.readPaths) {
             .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
             .into { read_files_trimming }
     }
-} else {
-    Channel
-        .fromFilePairs( params.reads, size: params.singleEnd ? 1 : 2 )
-        .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-        .into { read_files_trimming }
+    } else {
+        Channel
+            .fromFilePairs( params.reads, size: params.singleEnd ? 1 : 2 )
+            .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
+            .into { read_files_trimming }
 }
 
 // take care of persistent files
@@ -256,12 +256,31 @@ ${summary.collect { k,v -> "            <dt>$k</dt><dd><samp>${v ?: '<span style
 
 
 /*
-* Step 1. Trim Reads with FASTP
+* Step 1. QC raw reads, trim Reads with FASTP, QC reads post-trimming
 */
+
+
+//     process fastqc_raw {
+//         tag "fastQC_raw-${id}"
+//         publishDir "${params.outdir}/QC_Raw", mode: 'copy'
+//     
+//         input:
+//         set pair_id, file(raw_reads) from read_files_qc
+//     
+//         output:
+//         set val(id), file("*.zip") into rawReads2MultiQC 
+//         set val(id), file("*.gz") into fastp_trimming
+//         file "*fastqc.{html,zip}"
+//         file ".gz"
+//         """
+//         fastqc -t ${task.cpus} --noextract ${raw_reads}
+//         """
+//     }
+
 
 process fastp {
     tag "fastp-${id}"
-	label 'process_low'
+ label 'process_low'
     publishDir "${params.outdir}/1-TrimReadsFastP", mode: 'link'
 
     input:
@@ -270,7 +289,7 @@ process fastp {
     output:
 //    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFilter, trimmedAssembly, trimmedHUMANN2, trimmedKraken, trimmedMetaphlan, trimmedbwaAln
 //    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFilter, trimmedToFakeSanitize
-    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFilter, trimmedToFakeSanitize
+    set val(id), file("*.qualtrim.fastq.gz") into trimmedToFilter, trimmedToFakeSanitize, trimmedToFastQC
     file "*.html"
     file "*.json" into trimmedMultiQC
 
@@ -300,6 +319,28 @@ process fastp {
         """
     }
 }
+
+
+    process fastqc_trimmed {
+        tag "fastQC_trimmed-${id}"
+        publishDir "${params.outdir}/QC_Trimmed", mode: 'copy'
+    
+        input:
+        set val(id), file(trimmed_reads) from trimmedToFastQC
+    
+        output:
+        set val(id), file("*.zip") into trimmedReads2MultiQC
+        file "*fastqc.{html,zip}"
+    
+        """
+        fastqc -t ${task.cpus} --noextract ${trimmed_reads}
+        """
+    }
+
+
+
+
+
 
 
 /*
@@ -385,7 +426,7 @@ if (! params.includeRemoveHost) {
  * Step 3: VSEARCH Merging Reads
  */
 
-if (params.mergeSanizited ) {
+if (params.mergeSanitized ) {
 
     process vsearchMergeSanitized {
         tag "vsearch-${pair_id}"
@@ -419,7 +460,7 @@ if (params.mergeSanizited ) {
      
     process fastqc_MergedSanitized {
         tag "fastQCMergedSanitized-${pair_id}"
-        publishDir "${params.outdir}/QC_MergedSanitized", mode: 'link'
+        publishDir "${params.outdir}/QC_MergedSanitized", mode: 'copy'
     
         input:
         set pair_id, file(mergedReads) from mergedToQC
@@ -437,7 +478,7 @@ if (params.mergeSanizited ) {
 
 
 /*
- * Step 4: Phylogenetic profiling
+ * Step 4: Metaphlan Phylogenetic profiling of VSEARCH-merged host-filtered reads
  */
 
 
@@ -470,7 +511,7 @@ if (params.runMetaPhlan2) {
 }
 
 /*
- * Step 5: taxonomic classification
+ * Step 5: Kraken taxonomic classification of host-filtered read1 and read2
  */
 
 
@@ -491,19 +532,19 @@ if (params.runMetaPhlan2) {
  
          """
          kraken2 \\
-	       --db ${kraken2DB} \\
-	       --threads ${task.cpus} \\
-	       --output ${pair_id}.kraken2 \\
-	       --paired \\
+        --db ${kraken2DB} \\
+        --threads ${task.cpus} \\
+        --output ${pair_id}.kraken2 \\
+        --paired \\
          --report ${pair_id}.kraken2.report \\
-	       ${freads[0]} ${freads[1]}
+        ${freads[0]} ${freads[1]}
          """
      }
  
  }
 
 /*
- * Step 6: Assembly
+ * Step 6: Assembly: megahit or metaspades
  */
 
 
@@ -521,13 +562,15 @@ if (params.runAssembly) {
 
             output:
             file("${id}/*")
-            set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT2,assembly2Blobtools
+            set val(id), file("${id}/final.contigs.fa") into assembly2diamond,assembly2diamond2,assembly2bwaidx,assembly2MetaBAT2,assembly2Blobtools,assembly2Blobtools2
     
             script:
             megahitparams = params.megahit_opts ? params.megahit_opts : ''
             """
             megahit \\
+                --tmp-dir /scratch \\
                 -1 ${freads[0]} -2 ${freads[1]} \\
+                --presets meta-large \\
                 -t ${task.cpus} \\
                 -o ${id} ${megahitparams}
             """
@@ -546,7 +589,7 @@ if (params.runAssembly) {
 
             output:
             file("${id}/*")
-            set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2bwaidx,assembly2MetaBAT2
+            set val(id), file("${id}/scaffolds.fasta") into assembly2diamond,assembly2diamond2,assembly2bwaidx,assembly2MetaBAT2,assembly2Blobtools,assembly2Blobtools2
     
             script:
             metaspadesparams = params.metaspades_opts ? params.metaspades_opts : ''
@@ -562,7 +605,7 @@ if (params.runAssembly) {
 }
 
 /*
- * Step 7: Diamond 
+ * Step 7: Diamond blastx against UniProt db for contig taxonomic classification
  */
     
  if (params.runDiamond && params.diamondDB) {
@@ -616,7 +659,41 @@ if (params.runAssembly) {
 }
 
 /*
- * Step 8: Align reads to asssembly
+ * Step 7a: Diamond - blobtools2 - Diamond blastx against UniProt db for contig taxonomic classification
+ */
+
+ if (params.runDiamond) {
+        process diamond_for_blobtools2 {
+            tag "DIAMOND_for_blobtools2-${id}"
+            publishDir "${params.outdir}/7a-DIAMOND_for_blobtools2", mode: "copy"
+        
+            input:
+            set val(id), file(contigs) from assembly2diamond2
+
+            output:
+            set val(id), file("*.out") into diamondToBlobtools2
+            file("*.log")
+    
+            script:
+            """
+            diamond blastx --threads ${task.cpus} \\
+                 --db /home/groups/hpcbio/projects/mitchell/2022-January-Bactrocera-metagenomes/data/uniprot/reference_proteomes.dmnd \\
+                 --query $contigs \\
+                 --out ${id}.diamond.blastx.out \\
+                 --outfmt 6 qseqid staxids bitscore qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore \\
+                 --tmpdir /dev/shm \\
+                 --evalue 1e-5 \\
+                 --sensitive \\
+                 --max-target-seqs 1 \\
+                 --log
+            """
+        }
+}
+
+
+
+/*
+ * Step 8: Align host-filtered reads to assembled contigs
  */
    
 if (params.runMetaBAT || params.runBlobtools) {
@@ -664,8 +741,8 @@ if (params.runMetaBAT || params.runBlobtools) {
 
             output:
             //set val(id), file("${id}.sorted.bam*") into bwa2MetaBAT2
-            set val(id), file("${id}.sorted.bam") into bwa2MetaBAT2,bwa2Blobtools
-            set val(id), file("${id}*.bai")  into bwaIdxMetaBAT2,bwaIdx2Blobtools
+            set val(id), file("${id}.sorted.bam") into bwa2MetaBAT2,bwa2Blobtools,bwa2Blobtools2
+            set val(id), file("${id}*.bai")  into bwaIdxMetaBAT2,bwaIdx2Blobtools,bwaIdx2Blobtools2
             file("${id}.stats.txt")
     
             script:
@@ -678,7 +755,7 @@ if (params.runMetaBAT || params.runBlobtools) {
 }
 
 /*
- * Step 9: Taxonomic binning
+ * Step 9: Taxonomic binning with MetaBAT2
  */
  
 if (params.runMetaBAT) {
@@ -710,7 +787,7 @@ if (params.runMetaBAT) {
                 -t ${task.cpus} \\
                 --unbinned \\
                 -a ${id}.depth.txt \\
-                -o ./${id}_bins/
+                -o ./${id}_bins/${id}
 
             echo step three run checkm
             
@@ -725,7 +802,7 @@ if (params.runMetaBAT) {
 }
 
 /*
- * Step 10: Blobtools
+ * Step 10: Blobtools for visualizing taxonomic classification of contigs in blobplot
  */
  
 if (params.runBlobtools) {
@@ -769,8 +846,53 @@ if (params.runBlobtools) {
 
             blobtools view -i ${id}.blobplot.blobDB.json -o ${id}.blobplot.blobDB.json_superkingdom -r superkingdom            
                     
+            
+
             """
     }
+
+}
+
+/*
+ * Step 10a: Blobtools2 for producing table with multi-taxon level classification of contigs
+ */
+ 
+if (params.runBlobtools2) {
+    
+    process blobtools2 {
+            tag "blobtools2-${id}"
+            publishDir "${params.outdir}/10a-Blobtools2", mode: "copy"
+            
+            input:
+            set val(id), file(GENOME) from assembly2Blobtools2 
+            set val(id), file(bam) from bwa2Blobtools2
+            set val(id), file(bai) from bwaIdx2Blobtools2
+            set val(id), file(BLASTX) from diamondToBlobtools2
+                   
+            output:
+            file("*")
+            
+            script:
+            """ 
+            echo step 1 Create Blobdir
+            
+            blobtools create --fasta ${GENOME} ${id}-BlobDir
+
+            echo step 2 Add coverage
+            
+            blobtools add --cov ${bam}=${id}-Illumina-coverage ${id}-BlobDir
+
+            echo step 3 Add taxonomic hits
+
+            blobtools add --hits ${BLASTX} --taxdump /home/groups/hpcbio/projects/mitchell/2022-January-Bactrocera-metagenomes/data/taxdump/ ${id}-BlobDir
+
+            echo step 4 Produce table
+            
+            blobtools filter --table ${id}.blobtools2.table.tsv ${id}-BlobDir
+            
+            """
+
+     }
 
 }
 
@@ -781,9 +903,10 @@ if (params.runBlobtools) {
 process multiqc_ReadPrep {
     publishDir "${params.outdir}/QC_ReadPrep", mode: 'copy'
 
-    input:
-    file ('Trimmed/*') from trimmedMultiQC.collect()
-    file('SanitizedMerged/*') from mergedReads2MultiQC.collect()
+    input: 
+//    file ('QC_Raw/*') from rawReads2MultiQC.collect()
+    file ('QC_Trimmed/*') from trimmedReads2MultiQC.collect()
+    file ('QC_MergedSanitized/*') from mergedReads2MultiQC.collect()
 
     output:
     file "*"
