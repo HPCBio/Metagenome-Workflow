@@ -181,7 +181,7 @@ summary['Run Kraken2']      = params.runKraken2
 if (params.runKraken2 && params.Kraken2DB)    { summary['Kraken2 DB']   = params.Kraken2DB }
 summary['Run Diamond']      = params.runDiamond
 if (params.runDiamond && params.diamondDB)    { summary['Diamond DB']   = params.diamondDB }
-summary['Run MetaPhaln2']   = params.runMetaPhlan2
+summary['Run MetaPhlan2']   = params.runMetaPhlan
 summary['Run Assembly']     = params.runAssembly
 if (params.runAssembly && params.assembler)   { summary['Assembly tool'] = params.assembler }
 summary['Run MetaBAT']      = params.runMetaBAT
@@ -311,7 +311,7 @@ process fastp {
 
 
 
- if (params.includeRemoveHost && params.host) {
+if (params.includeRemoveHost && params.host) {
 
      process bowtie_Index_kneaddata {
          tag                    { gf }
@@ -352,8 +352,10 @@ process fastp {
              --reference-db ${genomePrefix} \\
              --output ${pair_id} \\
              --bypass-trim \\
+             --bypass-trf \\
              --decontaminate-pairs lenient \\
-             --threads ${task.cpus} ${runKneadDataparams}
+             --threads ${task.cpus} \\
+             ${runKneadDataparams}
  
          pigz -p ${task.cpus} ${pair_id}/*.fastq
          """
@@ -385,7 +387,7 @@ if (! params.includeRemoveHost) {
  * Step 3: VSEARCH Merging Reads
  */
 
-if (params.mergeSanizited ) {
+if (params.mergeSanitized ) {
 
     process vsearchMergeSanitized {
         tag "vsearch-${pair_id}"
@@ -433,6 +435,9 @@ if (params.mergeSanizited ) {
         """
     }
   
+} else {
+    Channel.empty()
+        .into { mergedReads2MultiQC; mergedToHUMANn2; mergedToMetaPhlan2; mergedToCentrifuge }
 }
 
 
@@ -441,7 +446,8 @@ if (params.mergeSanizited ) {
  */
 
 
-if (params.runMetaPhlan2) {
+if (params.runMetaPhlan) {
+    // TODO: set up Metaphlan3
 
     process metaphlan2 {
         tag "Metaphlan2-${pair_id}"
